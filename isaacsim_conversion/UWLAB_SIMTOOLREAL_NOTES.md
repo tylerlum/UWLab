@@ -2,6 +2,8 @@
 
 This branch adds a contained SimToolReal rollout path without modifying the OmniReset task path.
 
+Note: this file is historical for the early `isaacsim_conversion` rollout. The current trusted SimToolReal/FurnitureBench leg notes live in `isaacsimenvs/SIMTOOLREAL_FURNITUREBENCH_LEG_NOTES.md`, and the preferred rollout entrypoint is `isaacsimenvs/rollout_simtoolreal_policy.py`.
+
 ## Hammer Sanity Check
 
 ```bash
