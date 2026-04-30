@@ -39,6 +39,126 @@ Keep the tabletop/mating part kinematic. This matches OmniReset and is the most 
 
 The robot is baked with gravity disabled. The dynamic leg has gravity enabled. The table, fixture, and goal viz are kinematic with gravity disabled.
 
+## Decisions and Gotchas From Debugging
+
+These are the practical clarifications that mattered while getting the task to run.
+
+### Kinematic tabletop / receptive object
+
+OmniReset makes the receptive object kinematic. In the UWLab OmniReset RL-state config:
+
+- `insertive_object`: `kinematic_enabled=False`
+- `receptive_object`: `kinematic_enabled=True`
+- physical support table: `kinematic_enabled=True`
+
+This means the square leg is the only free object in the assembly interaction. The FurnitureBench tabletop/mating part is fixed in the simulation.
+
+We should do the same for SimToolReal leg rollouts:
+
+- Keep `SquareLeg` dynamic.
+- Keep `SquareTableTop` kinematic.
+- Keep `table_narrow` kinematic.
+
+This is easier than baking the tabletop into the table URDF, easier to swap/debug, closer to OmniReset, and closer to a real deployment where the fixture/tabletop should be clamped or bolted. A free tabletop can hide failures because the policy may push the receptive object instead of inserting the leg.
+
+### The 1 g mass confusion
+
+OmniReset's variant factory sets the insertive-object spawn mass to `0.001 kg`, which looks suspicious for the FurnitureBench leg. That is not the full story for RL-state training/eval configs: the startup randomization event overwrites the insertive object mass with an absolute sample in `[0.02, 0.2] kg`.
+
+For deterministic SimToolReal leg rollouts, use an explicit fixed mass in that range. Current choice:
+
+```text
+SquareLeg mass = 0.05 kg
+```
+
+This avoids the misleading 1 g default while staying representative of OmniReset's actual runtime mass range.
+
+### Policy rate and action path
+
+The pretrained SimToolReal policy should still run at 60 Hz:
+
+```text
+physics dt = 1 / 120
+decimation = 2
+policy dt = 1 / 60
+```
+
+The important action details are:
+
+- The policy outputs 29 normalized actions in canonical SimToolReal order.
+- `action_utils.py` permutes canonical order to Isaac Lab joint order.
+- Arm actions are integrated as velocity-like deltas into joint-position targets.
+- Hand actions are absolute normalized-to-joint-limit position targets.
+- Both arm and hand targets are smoothed with moving average `0.1`.
+- Targets are clamped to joint limits before being sent to Isaac Lab.
+
+When performance is bad, check this path before changing physics. Observation/action order, quaternion convention, and target rescaling are more likely to silently degrade behavior than a small friction tweak.
+
+### Quaternion conventions
+
+Use the conventions explicitly:
+
+- SciPy/deployment helper math uses `xyzw`.
+- Isaac Lab root states and config poses use `wxyz`.
+- The rollout uses helper functions `xyzw_to_wxyz()` and `wxyz_to_xyzw()` at the boundaries.
+
+For the leg policy frame, the most important transform is:
+
+```text
+q_world_policy = q_world_asset * q_asset_policy
+q_world_asset = q_world_policy * inverse(q_asset_policy)
+```
+
+Mixing the order or the `xyzw`/`wxyz` convention makes the leg appear roughly plausible but point the screw axis incorrectly.
+
+### Goal visualization
+
+The goal object is useful for debugging but can block the view of the hole/thread interaction. Use:
+
+```bash
+--hide_goal_viz
+```
+
+This only changes USD visibility for `GoalViz`. It should not change observations, goal poses, or physics because goal-viz collision is disabled.
+
+### Viewer/video timing
+
+Short videos were misleading because a few hundred policy steps only showed a few seconds. For visual checks, prefer about 10-20 seconds:
+
+```text
+600 policy steps = 10 seconds at 60 Hz
+1200 policy steps = 20 seconds at 60 Hz
+```
+
+For non-headless viewing, make sure the rollout is not terminating early on success or time. The leg debugging path added options such as `--ignore_dones` and longer `--max_steps` so the viewer keeps updating long enough to inspect contact.
+
+### Teleport sanity mode
+
+The policy is not expected to solve the new leg task perfectly. To isolate physics from robot control, use the fixed-robot scripted-object mode:
+
+```bash
+--robot_control_mode hold_default \
+--object_drive_mode teleport_trajectory
+```
+
+Useful variants:
+
+- Periodic teleport every `--teleport_interval_s 1.0`: good for checking whether the object blasts away after contact.
+- `--teleport_write_every_step`: good for dense screw/path visualization, but less strict as a physics stress test because the state is overwritten every step.
+- Hide goal viz while doing this if it blocks the hole.
+
+The harder future sanity check would be to drive the object with forces/torques instead of teleporting, but teleport mode is the simplest first-pass contact diagnostic.
+
+### OmniReset spin count observation
+
+The state-based OmniReset leg expert reached success quickly in the rerun. With the analysis thresholds used there:
+
+- first hole-entry estimate: about `4.3 s`
+- first success: about `6.2 s`
+- entry-to-success rotation: about `0.45` clockwise turns
+
+Treat this as an empirical observation, not a hard task definition. OmniReset success ignores yaw, so the exact number of spins is not part of the reward/success condition.
+
 ## Leg Frame Convention
 
 SimToolReal expects the object frame `+x` axis to be the long grasped-object axis. For the FurnitureBench square leg, `+x` should point from the cuboidal handle toward the screw threads.
@@ -270,4 +390,3 @@ Useful checks when modifying the leg task:
 - For contact sanity, use fixed robot plus teleport trajectory before trusting closed-loop policy behavior.
 - For screw sanity, watch whether the threaded end jams/spins rather than translating straight through SDF hole geometry.
 - If the leg explodes or tunnels, try the OmniReset physics profile before changing object frames or reward code.
-
