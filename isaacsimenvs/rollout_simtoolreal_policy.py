@@ -444,6 +444,7 @@ def main() -> int:
     obs, _ = env.reset()
     obs, _, _, _, _ = env.step(torch.zeros((cfg.scene.num_envs, cfg.action_space), device=inner.device))
     _write_goal(inner, args, goals[0])
+    obs = inner._get_observations()
 
     out_dir = Path(args.out_dir) / args.scenario
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -493,6 +494,7 @@ def main() -> int:
         object_pose_policy_xyzw = _asset_pose_wxyz_to_policy_xyzw(args, object_pose_asset_wxyz)
         goal_pose_policy_xyzw = _asset_pose_wxyz_to_policy_xyzw(args, goal_pose_asset_wxyz)
 
+        active_goal_idx = current_goal_idx
         env_kp_dist = float(inner._keypoints_max_dist[0].detach().cpu().item())
         kp_dist = _keypoint_max_dist_xyzw(
             object_pose_policy_xyzw,
@@ -506,9 +508,27 @@ def main() -> int:
         else:
             near_goal_steps = 0
 
+        obs_log.append(policy_obs[0].detach().cpu().numpy())
+        action_log.append(action[0].detach().cpu().numpy())
+        object_pose_log.append(object_pose_policy_xyzw)
+        object_pose_asset_log.append(pose_wxyz_to_xyzw(object_pose_asset_wxyz))
+        goal_pose_log.append(goal_pose_policy_xyzw)
+        kp_dist_log.append(kp_dist)
+        env_kp_dist_log.append(env_kp_dist)
+        goal_idx_log.append(active_goal_idx)
+
+        if step % 60 == 0:
+            print(
+                f"[rollout] step={step:4d} goal={active_goal_idx}/{len(goals)} "
+                f"kp_dist={kp_dist:.4f} env_kp={env_kp_dist:.4f} "
+                f"reward={float(reward[0].detach().cpu()):+.3f} "
+                f"near={near_goal_steps}/{args.success_steps}",
+                flush=True,
+            )
+
         if near_goal_steps >= int(args.success_steps):
             print(
-                f"[rollout] step={step} reached goal {current_goal_idx} "
+                f"[rollout] step={step} reached goal {active_goal_idx} "
                 f"kp_dist={kp_dist:.4f} env_kp={env_kp_dist:.4f}",
                 flush=True,
             )
@@ -518,24 +538,7 @@ def main() -> int:
                 print(f"[rollout] all goals reached at step {step}", flush=True)
                 break
             _write_goal(inner, args, goals[current_goal_idx])
-
-        obs_log.append(policy_obs[0].detach().cpu().numpy())
-        action_log.append(action[0].detach().cpu().numpy())
-        object_pose_log.append(object_pose_policy_xyzw)
-        object_pose_asset_log.append(pose_wxyz_to_xyzw(object_pose_asset_wxyz))
-        goal_pose_log.append(goal_pose_policy_xyzw)
-        kp_dist_log.append(kp_dist)
-        env_kp_dist_log.append(env_kp_dist)
-        goal_idx_log.append(current_goal_idx)
-
-        if step % 60 == 0:
-            print(
-                f"[rollout] step={step:4d} goal={current_goal_idx}/{len(goals)} "
-                f"kp_dist={kp_dist:.4f} env_kp={env_kp_dist:.4f} "
-                f"reward={float(reward[0].detach().cpu()):+.3f} "
-                f"near={near_goal_steps}/{args.success_steps}",
-                flush=True,
-            )
+            obs = inner._get_observations()
 
         if bool(terminated[0].item()) or bool(truncated[0].item()):
             print(
