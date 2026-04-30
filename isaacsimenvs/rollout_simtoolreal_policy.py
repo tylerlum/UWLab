@@ -61,6 +61,13 @@ FURNITUREBENCH_LEG_OBJECT_SCALE = (
     np.array([[0.06255, 0.03017705, 0.03017705]], dtype=np.float32) * 25.0
 )
 
+# Matches isaacgymenvs/utils/observation_action_utils_sharpa.py and
+# isaacsimenvs/tasks/simtoolreal/utils/obs_utils.py.
+POLICY_KEYPOINT_CORNERS = np.array(
+    [[1.0, 1.0, 1.0], [1.0, 1.0, -1.0], [-1.0, -1.0, 1.0], [-1.0, -1.0, -1.0]],
+    dtype=np.float32,
+)
+
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
@@ -92,6 +99,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--leg_hover_height", type=float, default=0.12)
     parser.add_argument("--leg_preinsert_height", type=float, default=0.070)
     parser.add_argument("--leg_insert_height", type=float, default=0.038)
+    parser.add_argument("--leg_descend_steps", type=int, default=4)
     parser.add_argument("--leg_spin_turns", type=float, default=1.0)
     parser.add_argument("--leg_spin_steps", type=int, default=8)
     parser.add_argument("--leg_fixture_clearance", type=float, default=0.002)
@@ -163,6 +171,46 @@ def _leg_asset_to_policy_pose_xyzw(asset_pose: np.ndarray) -> np.ndarray:
     return pose
 
 
+def _keypoints_from_pose_xyzw(
+    pose_xyzw: np.ndarray,
+    object_scale: np.ndarray,
+    object_base_size: float,
+    keypoint_scale: float,
+) -> np.ndarray:
+    """Compute deployment-style SimToolReal object keypoints."""
+    pose = np.asarray(pose_xyzw, dtype=np.float32)
+    offsets = (
+        POLICY_KEYPOINT_CORNERS
+        * np.asarray(object_scale, dtype=np.float32)[None]
+        * float(object_base_size)
+        * float(keypoint_scale)
+        * 0.5
+    )
+    return pose[:3][None] + R.from_quat(pose[3:7]).apply(offsets)
+
+
+def _keypoint_max_dist_xyzw(
+    object_pose_xyzw: np.ndarray,
+    goal_pose_xyzw: np.ndarray,
+    object_scale: np.ndarray,
+    object_base_size: float,
+    keypoint_scale: float,
+) -> float:
+    object_kps = _keypoints_from_pose_xyzw(
+        object_pose_xyzw,
+        object_scale,
+        object_base_size=object_base_size,
+        keypoint_scale=keypoint_scale,
+    )
+    goal_kps = _keypoints_from_pose_xyzw(
+        goal_pose_xyzw,
+        object_scale,
+        object_base_size=object_base_size,
+        keypoint_scale=keypoint_scale,
+    )
+    return float(np.linalg.norm(object_kps - goal_kps, axis=-1).max())
+
+
 def _make_furniturebench_leg_trajectory(args) -> tuple[np.ndarray, list[np.ndarray], np.ndarray]:
     table_center_z = 0.38
     table_half_height = 0.15
@@ -181,15 +229,24 @@ def _make_furniturebench_leg_trajectory(args) -> tuple[np.ndarray, list[np.ndarr
     goals = [
         np.array([hole[0], hole[1], hole[2] + args.leg_hover_height, *base_quat], dtype=np.float32),
         np.array([hole[0], hole[1], hole[2] + args.leg_preinsert_height, *base_quat], dtype=np.float32),
-        np.array([hole[0], hole[1], hole[2] + args.leg_insert_height, *base_quat], dtype=np.float32),
     ]
+    descend_steps = max(1, int(args.leg_descend_steps))
+    descend_heights = np.linspace(
+        float(args.leg_preinsert_height),
+        float(args.leg_insert_height),
+        descend_steps + 1,
+        dtype=np.float32,
+    )[1:]
+    for height in descend_heights:
+        goals.append(np.array([hole[0], hole[1], hole[2] + height, *base_quat], dtype=np.float32))
 
-    total_spin = -2.0 * np.pi * float(args.leg_spin_turns)
-    for theta in np.linspace(total_spin / args.leg_spin_steps, total_spin, args.leg_spin_steps):
-        spin_quat = _quat_multiply_xyzw(base_quat, R.from_euler("x", theta).as_quat())
-        goals.append(
-            np.array([hole[0], hole[1], hole[2] + args.leg_insert_height, *spin_quat], dtype=np.float32)
-        )
+    if int(args.leg_spin_steps) > 0 and abs(float(args.leg_spin_turns)) > 1.0e-8:
+        total_spin = -2.0 * np.pi * float(args.leg_spin_turns)
+        for theta in np.linspace(total_spin / args.leg_spin_steps, total_spin, args.leg_spin_steps):
+            spin_quat = _quat_multiply_xyzw(base_quat, R.from_euler("x", theta).as_quat())
+            goals.append(
+                np.array([hole[0], hole[1], hole[2] + args.leg_insert_height, *spin_quat], dtype=np.float32)
+            )
     return start_pose, goals, fixture_root
 
 
@@ -269,7 +326,7 @@ def _make_cfg(args):
         cfg.assets.object_scales = (object_scale,)
         cfg.reset.fixed_start_pose = pose_xyzw_to_wxyz(start_pose)
         cfg.reset.fixed_goal_pose = pose_xyzw_to_wxyz(goals[0])
-        return cfg, start_pose, goals
+        return cfg, start_pose, goals, np.asarray(object_scale, dtype=np.float32)
 
     start_pose_policy, goals_policy, fixture_root = _make_furniturebench_leg_trajectory(args)
     furniturebench_root = _furniturebench_asset_root()
@@ -296,7 +353,7 @@ def _make_cfg(args):
         0.0,
         0.0,
     )
-    return cfg, start_pose_policy, goals_policy
+    return cfg, start_pose_policy, goals_policy, FURNITUREBENCH_LEG_OBJECT_SCALE[0].copy()
 
 
 def _policy_goal_to_asset_goal(args, goal_policy_xyzw: np.ndarray) -> np.ndarray:
@@ -365,7 +422,7 @@ def main() -> int:
     from deployment.rl_player import RlPlayer
 
     args = _args
-    cfg, _start_pose, goals = _make_cfg(args)
+    cfg, _start_pose, goals, object_scale = _make_cfg(args)
 
     env = gym.make("Isaacsimenvs-SimToolReal-Direct-v0", cfg=cfg)
     inner = env.unwrapped
@@ -397,6 +454,7 @@ def main() -> int:
     object_pose_asset_log: list[np.ndarray] = []
     goal_pose_log: list[np.ndarray] = []
     kp_dist_log: list[float] = []
+    env_kp_dist_log: list[float] = []
     goal_idx_log: list[int] = []
 
     current_goal_idx = 0
@@ -435,7 +493,14 @@ def main() -> int:
         object_pose_policy_xyzw = _asset_pose_wxyz_to_policy_xyzw(args, object_pose_asset_wxyz)
         goal_pose_policy_xyzw = _asset_pose_wxyz_to_policy_xyzw(args, goal_pose_asset_wxyz)
 
-        kp_dist = float(inner._keypoints_max_dist[0].detach().cpu().item())
+        env_kp_dist = float(inner._keypoints_max_dist[0].detach().cpu().item())
+        kp_dist = _keypoint_max_dist_xyzw(
+            object_pose_policy_xyzw,
+            goal_pose_policy_xyzw,
+            object_scale=object_scale,
+            object_base_size=cfg.reward.object_base_size,
+            keypoint_scale=cfg.reward.keypoint_scale,
+        )
         if kp_dist < float(args.keypoint_tolerance):
             near_goal_steps += 1
         else:
@@ -444,7 +509,7 @@ def main() -> int:
         if near_goal_steps >= int(args.success_steps):
             print(
                 f"[rollout] step={step} reached goal {current_goal_idx} "
-                f"kp_dist={kp_dist:.4f}",
+                f"kp_dist={kp_dist:.4f} env_kp={env_kp_dist:.4f}",
                 flush=True,
             )
             current_goal_idx += 1
@@ -460,12 +525,14 @@ def main() -> int:
         object_pose_asset_log.append(pose_wxyz_to_xyzw(object_pose_asset_wxyz))
         goal_pose_log.append(goal_pose_policy_xyzw)
         kp_dist_log.append(kp_dist)
+        env_kp_dist_log.append(env_kp_dist)
         goal_idx_log.append(current_goal_idx)
 
         if step % 60 == 0:
             print(
                 f"[rollout] step={step:4d} goal={current_goal_idx}/{len(goals)} "
-                f"kp_dist={kp_dist:.4f} reward={float(reward[0].detach().cpu()):+.3f} "
+                f"kp_dist={kp_dist:.4f} env_kp={env_kp_dist:.4f} "
+                f"reward={float(reward[0].detach().cpu()):+.3f} "
                 f"near={near_goal_steps}/{args.success_steps}",
                 flush=True,
             )
@@ -487,8 +554,10 @@ def main() -> int:
         object_poses_asset_xyzw=np.asarray(object_pose_asset_log, dtype=np.float32),
         goal_poses_policy_xyzw=np.asarray(goal_pose_log, dtype=np.float32),
         kp_dists=np.asarray(kp_dist_log, dtype=np.float32),
+        env_kp_dists=np.asarray(env_kp_dist_log, dtype=np.float32),
         goal_idxs=np.asarray(goal_idx_log, dtype=np.int32),
         goals_policy_xyzw=np.asarray(goals, dtype=np.float32),
+        object_scale=np.asarray(object_scale, dtype=np.float32),
         scenario=args.scenario,
     )
     print(f"[rollout] wrote {npz_path}", flush=True)
