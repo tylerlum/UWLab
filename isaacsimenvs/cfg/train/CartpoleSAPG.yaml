@@ -1,0 +1,87 @@
+# SAPG variant of CartpolePPO.yaml. SAPG lives in the vendored rl_games fork as
+# config flags on a2c_common.py (not a separate algorithm). Activates via:
+#   use_others_experience=lf, expl_type=mixed_expl_learn_param,
+#   expl_coef_block_size, expl_reward_coef_scale, fixed_sigma=coef_cond.
+# Constraint: num_envs % num_blocks == 0 (here 2048 / 2 = 1024).
+
+params:
+  seed: 42
+
+  env:
+    clip_observations: 5.0
+    clip_actions: 1.0
+
+  algo:
+    name: a2c_continuous
+
+  model:
+    name: continuous_a2c_logstd
+
+  network:
+    name: actor_critic
+    separate: False
+    space:
+      continuous:
+        mu_activation: None
+        sigma_activation: None
+        mu_init:
+          name: default
+        sigma_init:
+          name: const_initializer
+          val: 0
+        fixed_sigma: coef_cond
+    mlp:
+      units: [32, 32]
+      activation: elu
+      d2rl: False
+      initializer:
+        name: default
+      regularizer:
+        name: None
+
+  load_checkpoint: False
+  load_path: ''
+
+  config:
+    # Must start with `<int>_` — our vendored rl_games parses policy_idx from the prefix.
+    name: 0_cartpole_sapg
+    env_name: rlgpu
+    device: 'cuda:0'
+    device_name: 'cuda:0'
+    multi_gpu: False
+    ppo: True
+    mixed_precision: False
+    normalize_input: True
+    normalize_value: True
+    num_actors: ${....env.scene.num_envs}
+    reward_shaper:
+      scale_value: 0.1
+    normalize_advantage: True
+    gamma: 0.99
+    tau: 0.95
+    learning_rate: 5e-4
+    lr_schedule: adaptive
+    kl_threshold: 0.008
+    score_to_win: 20000
+    max_epochs: 150
+    save_best_after: 50
+    save_frequency: 25
+    grad_norm: 1.0
+    entropy_coef: 0.0
+    truncate_grads: True
+    e_clip: 0.2
+    horizon_length: 32
+    minibatch_size: 16384
+    mini_epochs: 8
+    critic_coef: 4
+    clip_value: True
+    seq_length: 4
+    bounds_loss_coef: 0.0001
+
+    # === SAPG ===
+    use_others_experience: lf
+    off_policy_ratio: 1.0
+    expl_type: mixed_expl_learn_param
+    expl_reward_type: entropy
+    expl_coef_block_size: 1024
+    expl_reward_coef_scale: 0.005

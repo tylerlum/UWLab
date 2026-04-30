@@ -1,0 +1,16 @@
+modality: rgbd
+mount: wrist
+link_name: iiwa14_link_7
+convention: ros
+width: 960
+height: 540
+focal_length: 24.0
+horizontal_aperture: 33.19737869997174
+focus_distance: 400.0
+clipping_range: [0.1, 100.0]
+pose:
+  # Wrist debug camera in the iiwa14_link_7 frame.
+  # Candidate v1: keep the initial wrist-relative position, but aim ROS +Z
+  # toward the hammer/table workspace with image-up roughly world-up.
+  pos: [0.0, -0.02, 0.08]
+  quat_wxyz: [0.12545489219684844, 0.4493075843315888, -0.2976410189316007, 0.8329427282444742]

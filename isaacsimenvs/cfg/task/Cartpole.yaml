@@ -1,0 +1,41 @@
+# Overlay applied on top of CartpoleEnvCfg() defaults by
+# `hydra_task_config_with_yaml` (see isaacsimenvs/utils/hydra_utils.py).
+# Key paths mirror the configclass attribute tree exactly (snake_case).
+# Isaac Lab's `configclass.from_dict` is strict — unknown keys raise.
+# Override at submission time via Hydra CLI, e.g.:
+#   env.action_scale=200.0 env.rew_scale_pole_pos=-2.0 env.scene.num_envs=8192
+
+# Top-level CartpoleEnvCfg scalars
+decimation: 2
+episode_length_s: 5.0
+action_scale: 100.0          # [N]
+cart_dof_name: slider_to_cart
+pole_dof_name: cart_to_pole
+
+# Reset
+max_cart_pos: 3.0            # [m]; cart terminated when |pos| > this
+initial_pole_angle_range: [-0.25, 0.25]  # scaled by pi at reset
+
+# Reward scales
+rew_scale_alive: 1.0
+rew_scale_terminated: -2.0
+rew_scale_pole_pos: -1.0
+rew_scale_cart_vel: -0.01
+rew_scale_pole_vel: -0.005
+
+# Recording camera pose in env-local frame (added to env_origins[env_idx]
+# at capture time). Cart rail is at z=2.0; default: look from -X, 0.5m up.
+record_camera_eye: [-3.0, 0.0, 2.5]
+record_camera_target: [0.0, 0.0, 2.0]
+
+# Nested: SimulationCfg
+sim:
+  dt: 0.00833333333           # 1/120
+  render_interval: 2
+
+# Nested: InteractiveSceneCfg
+scene:
+  num_envs: 4096
+  env_spacing: 4.0
+  replicate_physics: true
+  clone_in_fabric: true

@@ -1,0 +1,177 @@
+# PegInHole task preset for depth/RGBD student distillation.
+# This is intentionally a derivative copy of PegInHole.yaml because the current
+# task YAML loader applies one overlay file rather than composing YAML defaults.
+
+decimation: 2
+episode_length_s: 10.0
+action_space: 29
+
+sim:
+  dt: 0.00833333333
+  render_interval: 2
+  gravity: [0.0, 0.0, -9.81]
+  render:
+    rendering_mode: performance
+    antialiasing_mode: Off
+  physx:
+    solver_type: 1
+    min_position_iteration_count: 8
+    max_position_iteration_count: 8
+    min_velocity_iteration_count: 0
+    max_velocity_iteration_count: 0
+    bounce_threshold_velocity: 0.2
+    friction_offset_threshold: 0.04
+    friction_correlation_distance: 0.025
+    gpu_max_rigid_patch_count: 8388608
+
+scene:
+  num_envs: 512
+  env_spacing: 1.2
+  replicate_physics: false
+  clone_in_fabric: false
+
+assets:
+  robot_urdf: "assets/urdf/kuka_sharpa_description/iiwa14_left_sharpa_adjusted_restricted.urdf"
+  table_urdf: "assets/urdf/peg_in_hole/scenes/scene_0000/scene_tol00.urdf"
+  object_name: "peg"
+  peg_urdf: "assets/urdf/peg_in_hole/peg/peg.urdf"
+  peg_scale: [6.25, 0.75, 0.5]
+  modify_asset_frictions: true
+  robot_friction: 0.5
+  finger_tip_friction: 1.5
+  object_friction: 0.5
+  table_friction: 0.5
+
+peg_in_hole:
+  scenes_path: "assets/urdf/peg_in_hole/scenes/scenes.npz"
+  goal_mode: "dense"
+  goal_xy_obs_noise: 0.002
+  enable_retract: true
+  retract_reward_scale: 1.0
+  retract_distance_threshold: 0.1
+  retract_success_bonus: 1000.0
+  retract_success_tolerance: 0.005
+  force_scene_tol_combo: null
+  force_tightest_tol_per_scene: false
+  tightest_n_tol_slots_per_scene: -1
+  force_peg_idx: null
+  object_init_position_noise_xy: [0.0, 0.0]
+  object_init_position_noise_z: 0.0
+  object_init_orientation_mode: "scene"
+  object_init_yaw_range_degrees: 180.0
+
+obs:
+  state_list: [joint_pos, joint_vel, prev_action_targets, palm_pos, palm_rot, palm_vel,
+               object_rot, object_vel, fingertip_pos_rel_palm, keypoints_rel_palm,
+               keypoints_rel_goal, object_scales, closest_keypoint_max_dist,
+               closest_fingertip_dist, lifted_object, progress, successes, reward]
+  obs_list: [joint_pos, joint_vel, prev_action_targets, palm_pos, palm_rot,
+             object_rot, fingertip_pos_rel_palm, keypoints_rel_palm,
+             keypoints_rel_goal, object_scales]
+  clamp_abs_observations: 10.0
+
+student_obs:
+  enabled: true
+  proprio_list: [joint_pos, joint_vel, prev_action_targets]
+  image_enabled: true
+  image_modality: depth
+  image_width: 160
+  image_height: 90
+  image_input_width: 70
+  image_input_height: 70
+  crop_enabled: true
+  crop_top_left: [90, 0]
+  crop_bottom_right: [160, 70]
+  use_camera_delay: false
+  camera_delay_max: 0
+  use_student_obs_delay: false
+  student_obs_delay_max: 0
+  depth_preprocess_mode: window_normalize
+  depth_min_m: 0.70
+  depth_max_m: 1.10
+  hide_goal_viz: true
+  depth_noise_profile: "off"
+  depth_noise_strength: 1.0
+  camera_pose_randomization_profile: "off"
+  camera_pose_randomization_mode: "startup"
+  camera_backend: tiled
+  camera_mount: world
+  camera_convention: ros
+  camera_pos: [-0.5002050422666431, -0.6385715691360607, 1.0201893282998005]
+  camera_quat_wxyz: [-0.5314110448277682, 0.833810802683381, -0.14035163049226862, 0.051606846267884886]
+  focal_length: 24.0
+  horizontal_aperture: 33.19737869997174
+  focus_distance: 400.0
+  clipping_range: [0.1, 5.0]
+
+action:
+  arm_moving_average: 0.1
+  hand_moving_average: 0.1
+  dof_speed_scale: 1.5
+
+reward:
+  keypoint_rew_scale: 200.0
+  keypoint_scale: 1.5
+  object_base_size: 0.04
+  fixed_size: [0.141, 0.03025, 0.0271]
+  fixed_size_keypoint_reward: true
+  lifting_rew_scale: 20.0
+  lifting_bonus: 300.0
+  lifting_bonus_threshold: 0.15
+  distance_delta_rew_scale: 50.0
+  reach_goal_bonus: 1000.0
+  kuka_actions_penalty_scale: 0.03
+  hand_actions_penalty_scale: 0.003
+
+reset:
+  reset_position_noise_x: 0.1
+  reset_position_noise_y: 0.1
+  reset_position_noise_z: 0.02
+  fixed_start_pose: null
+  reset_dof_pos_random_interval_arm: 0.1
+  reset_dof_pos_random_interval_fingers: 0.1
+  reset_dof_vel_random_interval: 0.5
+  table_reset_z: 0.38
+  table_reset_z_range: 0.01
+  table_object_z_offset: 0.25
+  goal_sampling_type: delta
+  delta_goal_distance: 0.1
+  delta_rotation_degrees: 90.0
+  target_volume_mins: [-0.35, -0.2, 0.6]
+  target_volume_maxs: [0.35, 0.2, 0.95]
+  target_volume_region_scale: 1.0
+  fixed_goal_pose: null
+
+termination:
+  episode_length: 600
+  success_tolerance: 0.075
+  target_success_tolerance: 0.01
+  eval_success_tolerance: null
+  success_steps: 10
+  max_consecutive_successes: 13
+  force_consecutive_near_goal_steps: false
+  tolerance_curriculum_increment: 0.9
+  tolerance_curriculum_interval: 3000
+  tolerance_curriculum_success_threshold: 3.0
+
+domain_randomization:
+  use_obs_delay: true
+  obs_delay_max: 3
+  use_action_delay: true
+  action_delay_max: 3
+  use_object_state_delay_noise: true
+  object_state_delay_max: 10
+  object_state_xyz_noise_std: 0.01
+  object_state_rotation_noise_degrees: 5.0
+  object_scale_noise_multiplier_range: [1.0, 1.0]
+  joint_velocity_obs_noise_std: 0.1
+  force_scale: 20.0
+  force_prob_range: [0.001, 0.1]
+  force_decay: 0.0
+  force_decay_interval: 0.08
+  force_only_when_lifted: true
+  torque_scale: 2.0
+  torque_prob_range: [0.001, 0.1]
+  torque_decay: 0.0
+  torque_decay_interval: 0.08
+  torque_only_when_lifted: true

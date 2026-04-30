@@ -1,0 +1,60 @@
+# PegInHole depth-student distillation preset.
+# This is not consumed by the existing rl_games trainer yet. It is registered
+# as distill_cfg_entry_point for the upcoming DAgger + policy-gradient loop.
+
+task: Isaacsimenvs-PegInHoleDepthStudent-Direct-v0
+task_cfg: cfg/task/PegInHoleDepthStudent.yaml
+teacher_agent_cfg: cfg/train/SimToolRealSAPG.yaml
+rl_agent_cfg: cfg/train/SimToolRealPPO.yaml
+
+teacher:
+  checkpoint: ""
+  obs_key: policy
+  action_key: action
+
+critic:
+  obs_key: critic
+
+student:
+  obs_method: get_student_obs
+  image_key: image
+  proprio_key: proprio
+  architecture: mono_transformer_recurrent
+  action_dim: 29
+  proprio_dim: 87
+  image_channels: 1
+  hidden_dim: 512
+  recurrent_units: 512
+
+dagger:
+  action_loss_weight: 1.0
+  beta_mode: always_student
+  beta_start: 0.0
+  beta_end: 0.0
+  beta_decay: 0.0
+  teacher_action_detach: true
+  use_student_action_delay: false
+  student_action_delay_max: 0
+
+rl:
+  algorithm: ppo
+  enabled: true
+  value_loss_weight: 4.0
+  entropy_coef: 0.0
+  clip_param: 0.1
+  gamma: 0.99
+  tau: 0.95
+
+optim:
+  learning_rate: 0.0001
+  grad_norm: 1.0
+  mixed_precision: true
+
+rollout:
+  num_envs: 512
+  horizon_length: 16
+  minibatch_size: 16384
+  mini_epochs: 2
+  max_epochs: 1000000
+  save_frequency: 3000
+  log_interval: 100

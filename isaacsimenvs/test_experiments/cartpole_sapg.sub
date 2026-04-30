@@ -1,0 +1,90 @@
+#!/bin/bash
+#SBATCH -N 1
+#SBATCH -n 1
+#SBATCH --cpus-per-task=12
+#SBATCH --get-user-env
+#SBATCH --mem=60000
+#SBATCH -t 1-00:00:00
+#SBATCH --partition=portal
+#SBATCH --exclude=portal-compute-01
+#SBATCH --gres=gpu:1
+#SBATCH -o /dev/null
+#SBATCH -e /dev/null
+
+# ╔══════════════════════════════════════════════════════════════╗
+# ║  isaacsimenvs smoke experiment — Cartpole + SAPG             ║
+# ║  Exercises the SAPG code path in our vendored rl_games fork  ║
+# ║  (mixed_expl_learn_param + leader-follower) on a long run.   ║
+# ╚══════════════════════════════════════════════════════════════╝
+
+# ── Train / algo ─────────────────────────────────────────────
+TASK_ID="Isaacsimenvs-Cartpole-Direct-v0"
+AGENT_KEY="rl_games_sapg_cfg_entry_point"
+NUM_ENVS=4096                     # must be divisible by num_blocks (block_size=1024 → 4 blocks)
+MINIBATCH_SIZE=16384
+MAX_ITERATIONS=200
+SEED=42
+
+# ── Weights & Biases ─────────────────────────────────────────
+WANDB_PROJECT="isaacsimenvs"
+WANDB_GROUP="cartpole_sapg"
+EXPERIMENT_TAG="cartpole_sapg"
+
+# ╔══════════════════════════════════════════════════════════════╗
+# ║         END CONFIG — generally don't edit below here        ║
+# ╚══════════════════════════════════════════════════════════════╝
+
+set -euo pipefail
+
+REPO_ROOT="/share/portal/kk837/depthbasedRL"
+
+# ── Derived: experiment name & logging ───────────────────────
+DATETIME=$(date +"%Y-%m-%d_%H-%M-%S")
+EXPERIMENT_NAME="${EXPERIMENT_TAG}_${DATETIME}"
+if [ -n "${SLURM_JOB_ID:-}" ]; then
+    scontrol update JobId="$SLURM_JOB_ID" JobName="$EXPERIMENT_NAME" || true
+fi
+HYDRA_RUN_DIR="${REPO_ROOT}/train_dir/${WANDB_PROJECT}/${WANDB_GROUP}/${EXPERIMENT_NAME}"
+mkdir -p "$HYDRA_RUN_DIR"
+exec > "${HYDRA_RUN_DIR}/slurm.log" 2> "${HYDRA_RUN_DIR}/slurm.err"
+
+# ── GPU monitoring (background) ─────────────────────────────
+echo "=== Initial GPU State ==="
+nvidia-smi
+echo ""
+
+GPU_LOG="${HYDRA_RUN_DIR}/gpu_usage.log"
+(
+    while true; do
+        echo "=== $(date '+%Y-%m-%d %H:%M:%S') ===" >> "$GPU_LOG"
+        nvidia-smi --query-gpu=memory.used,memory.total,memory.free,utilization.gpu,temperature.gpu \
+            --format=csv,noheader >> "$GPU_LOG" 2>&1
+        sleep 30
+    done
+) &
+GPU_MONITOR_PID=$!
+trap "kill $GPU_MONITOR_PID 2>/dev/null" EXIT
+
+# ── Isaac Sim env ────────────────────────────────────────────
+cd "$REPO_ROOT"
+source .venv_isaacsim/bin/activate
+export OMNI_KIT_ACCEPT_EULA=YES
+export OMNI_KIT_CACHE_PATH="/tmp/${USER}_ov_cache"
+mkdir -p "$OMNI_KIT_CACHE_PATH"
+
+# ── Launch training ──────────────────────────────────────────
+python -u isaacsimenvs/train.py \
+    --task "$TASK_ID" \
+    --agent "$AGENT_KEY" \
+    --headless --enable_cameras \
+    --capture_video --video_interval 20 \
+    --wandb_activate \
+    --wandb_project "$WANDB_PROJECT" \
+    --wandb_group "$WANDB_GROUP" \
+    --wandb_entity kk837 \
+    --wandb_name "$EXPERIMENT_NAME" \
+    env.scene.num_envs=$NUM_ENVS \
+    agent.params.config.max_epochs=$MAX_ITERATIONS \
+    agent.params.config.minibatch_size=$MINIBATCH_SIZE \
+    agent.params.seed=$SEED \
+    hydra.run.dir="$HYDRA_RUN_DIR"

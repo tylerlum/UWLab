@@ -1,0 +1,27 @@
+num_episodes: 100
+max_steps: 700
+action_loss_weight: 1.0
+aux_object_pos_weight: 1.0
+hand_moving_average: 0.1
+arm_moving_average: 0.1
+dof_speed_scale: 1.5
+control_dt: 0.016666666666666666
+beta_mode: fixed_decay
+beta_start: 1.0
+beta_end: 0.0
+beta_decay: 0.02
+beta_metric_threshold: 0.8
+beta_update_episodes: 2
+beta_hold_episodes: 15
+checkpoint_interval: 10
+eval_interval: 999
+image_height: 90
+image_width: 160
+learning_rate: 0.0001
+num_envs: 32
+env_spacing: 4.0
+object_start_mode: randomized
+object_pos_noise_xyz: [0.015, 0.015, 0.005]
+object_yaw_noise_deg: 8.0
+monitor_num_envs: 4
+monitor_log_window: 10

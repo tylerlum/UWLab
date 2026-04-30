@@ -1,0 +1,18 @@
+modality: rgbd
+mount: wrist
+link_name: iiwa14_link_7
+convention: ros
+width: 960
+height: 540
+focal_length: 24.0
+horizontal_aperture: 33.19737869997174
+focus_distance: 400.0
+clipping_range: [0.1, 100.0]
+pose:
+  # Wrist debug camera in the iiwa14_link_7 frame.
+  # Initial guess:
+  # - a bit behind the palm/fingers along the hand approach direction
+  # - slightly offset in y to sit near the palm center
+  # - forward (+Z in ROS camera convention) points toward the fingers
+  pos: [0.0, -0.02, 0.08]
+  quat_wxyz: [1.0, 0.0, 0.0, 0.0]

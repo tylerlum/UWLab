@@ -1,0 +1,7 @@
+modality: rgbd
+convention: ros
+pose:
+  # Simple top-down sanity-check camera over the world origin/table.
+  # Keep the real-camera T_W_C in the other configs; this is only for debug.
+  pos: [0.0, 0.0, 1.0]
+  quat_wxyz: [0.0, 1.0, 0.0, 0.0]

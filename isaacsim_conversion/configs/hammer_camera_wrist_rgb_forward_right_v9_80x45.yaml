@@ -1,0 +1,14 @@
+modality: rgb
+mount: wrist
+link_name: iiwa14_link_7
+convention: ros
+width: 80
+height: 45
+focal_length: 24.0
+horizontal_aperture: 33.19737869997174
+focus_distance: 400.0
+clipping_range: [0.1, 100.0]
+pose:
+  # RGB-only 80x45 version of the preferred V9 wrist camera.
+  pos: [0.0, -0.05, -0.04]
+  quat_wxyz: [0.003254200825963178, 0.02562144637318486, -0.12595656314649195, 0.9916994987712024]

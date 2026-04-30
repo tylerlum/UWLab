@@ -1,0 +1,494 @@
+"""SimToolRealEnvCfg — typed defaults for the SimToolReal goal-pose-reaching task.
+
+Organized into sectioned sub-configclasses that mirror the YAML overlay
+in cfg/task/SimToolReal.yaml 1:1:
+
+    sim                     → isaaclab.sim.SimulationCfg (+ PhysxCfg)
+    scene                   → SimToolRealSceneCfg(InteractiveSceneCfg)
+    obs                     → ObsCfg
+    student_obs             → StudentObsCfg (disabled by default)
+    action                  → ActionCfg
+    reward                  → RewardCfg
+    reset                   → ResetCfg   (includes goal sampling)
+    termination             → TerminationCfg (includes tolerance curriculum)
+    domain_randomization    → DomainRandomizationCfg
+
+Values match the legacy isaacgymenvs/cfg/task/SimToolReal.yaml defaults with
+the following deliberate deviations (see plan file
+.claude/plans/we-are-currently-in-twinkling-bengio.md):
+
+  - `controlFrequencyInv` removed; Isaac Lab's `decimation=2` + `sim.dt=1/120`
+    yields the same 60 Hz policy / 120 Hz physics as legacy `dt=1/60 +
+    substeps=2`.
+  - `fallDistance` / `fallPenalty` removed (unused in legacy env.py).
+  - `useRelativeControl` removed (legacy True branch not being ported).
+  - DR tree pruned to obs/action/object-state delays + force/torque impulses +
+    object-scale & joint-vel obs noise (see DomainRandomizationCfg docstring).
+  - Curricula pruned to tolerance curriculum only.
+
+The Env class itself (`simtoolreal_env.py:SimToolRealEnv`) is still a stub —
+all DirectRLEnv hooks raise NotImplementedError. Phases B–H populate them.
+"""
+
+from __future__ import annotations
+
+from isaaclab.envs import DirectRLEnvCfg, ViewerCfg
+from isaaclab.scene import InteractiveSceneCfg
+from isaaclab.sim import PhysxCfg, SimulationCfg
+from isaaclab.utils import configclass
+
+
+# ----------------------------------------------------------------------------
+# scene — kept as plain InteractiveSceneCfg (num_envs + layout knobs only).
+# Isaac Lab's InteractiveScene._add_entities_from_cfg iterates every field
+# on the scene cfg and rejects anything that isn't an AssetBaseCfg-derived
+# config, so the asset metadata (URDF paths, frictions, procedural knobs)
+# must live under a sibling section — see AssetsCfg below.
+# ----------------------------------------------------------------------------
+
+
+# ----------------------------------------------------------------------------
+# assets — URDFs, procedural-generation knobs, static per-material frictions
+# ----------------------------------------------------------------------------
+
+
+@configclass
+class AssetsCfg:
+    robot_urdf: str = (
+        "assets/urdf/kuka_sharpa_description/iiwa14_left_sharpa_adjusted_restricted.urdf"
+    )
+    table_urdf: str = "assets/urdf/table_narrow.urdf"
+
+    object_name: str = "handle_head_primitives"
+    handle_head_types: tuple[str, ...] = (
+        "hammer",
+        "screwdriver",
+        "marker",
+        "spatula",
+        "eraser",
+        "brush",
+    )
+    num_assets_per_type: int = 100
+
+    # Shuffle the procedural pool after generation. Legacy default (True)
+    # gives env i uniform coverage over types via i % len(pool). Debug/parity
+    # runs set this False so pool[0] is the first matching distribution
+    # (cuboid hammer ahead of cylinder hammer, etc.) — see
+    # debug_differences/policy_rollout_isaacsim.py.
+    shuffle_assets: bool = True
+
+    # Static per-material frictions (set once at asset creation, not per-reset DR).
+    modify_asset_frictions: bool = True
+    robot_friction: float = 0.5
+    finger_tip_friction: float = 1.5
+    object_friction: float = 0.5
+    table_friction: float = 0.5
+
+    # Optional explicit object pool. When either of these is set, scene_utils
+    # skips procedural handle-head generation and uses the supplied assets.
+    object_urdf_paths: tuple[str, ...] = ()
+    object_usd_paths: tuple[str, ...] = ()
+    object_scales: tuple[tuple[float, float, float], ...] = ()
+
+    # Fixed transform from an object's physical asset root to the policy object
+    # frame. This keeps the trusted isaacsimenvs mechanics intact while allowing
+    # assets such as FurnitureBench SquareLeg to expose the long axis as policy
+    # +x. Format is (qw, qx, qy, qz), applied as q_world_policy =
+    # q_world_asset * q_asset_policy.
+    object_policy_frame_quat_wxyz: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0)
+    object_policy_frame_pos_offset: tuple[float, float, float] = (0.0, 0.0, 0.0)
+
+    # Optional kinematic object in the scene, used for fixed mating parts such
+    # as the FurnitureBench tabletop that the leg screws into.
+    fixture_usd_path: str = ""
+    fixture_collision_enabled: bool = True
+
+# ----------------------------------------------------------------------------
+# obs
+# ----------------------------------------------------------------------------
+
+@configclass
+class ObsCfg:
+    """Asymmetric actor-critic obs layout + clamping."""
+
+    # Critic sees the full state list; actor sees the obs list subset.
+    state_list: tuple[str, ...] = (
+        "joint_pos",
+        "joint_vel",
+        "prev_action_targets",
+        "palm_pos",
+        "palm_rot",
+        "palm_vel",
+        "object_rot",
+        "object_vel",
+        "fingertip_pos_rel_palm",
+        "keypoints_rel_palm",
+        "keypoints_rel_goal",
+        "object_scales",
+        "closest_keypoint_max_dist",
+        "closest_fingertip_dist",
+        "lifted_object",
+        "progress",
+        "successes",
+        "reward",
+    )
+    obs_list: tuple[str, ...] = (
+        "joint_pos",
+        "joint_vel",
+        "prev_action_targets",
+        "palm_pos",
+        "palm_rot",
+        "object_rot",
+        "fingertip_pos_rel_palm",
+        "keypoints_rel_palm",
+        "keypoints_rel_goal",
+        "object_scales",
+    )
+
+    clamp_abs_observations: float = 10.0
+
+
+# ----------------------------------------------------------------------------
+# student_obs
+# ----------------------------------------------------------------------------
+
+
+@configclass
+class StudentObsCfg:
+    """Optional camera + proprio observation path for distillation students.
+
+    This is disabled by default and is not part of DirectRLEnv's normal
+    ``_get_observations`` path. Distillation code explicitly calls
+    ``env.unwrapped.get_student_obs()`` when this section is enabled.
+    """
+
+    enabled: bool = False
+
+    # Proprio fields are assembled in this order from the same canonical joint
+    # helper used by the teacher observation path.
+    proprio_list: tuple[str, ...] = (
+        "joint_pos",
+        "joint_vel",
+        "prev_action_targets",
+    )
+
+    image_enabled: bool = True
+    image_modality: str = "depth"  # "depth" | "rgb" | "rgbd"
+    image_width: int = 160
+    image_height: int = 90
+    image_input_width: int = 160
+    image_input_height: int = 90
+    crop_enabled: bool = False
+    crop_top_left: tuple[int, int] = (0, 0)  # (x0, y0), inclusive
+    crop_bottom_right: tuple[int, int] = (0, 0)  # (x1, y1), exclusive
+
+    use_camera_delay: bool = False
+    camera_delay_max: int = 0
+    use_student_obs_delay: bool = False
+    student_obs_delay_max: int = 0
+
+    # "clip_divide" | "window_normalize" | "metric"
+    depth_preprocess_mode: str = "window_normalize"
+    depth_min_m: float = 0.45
+    depth_max_m: float = 1.25
+    hide_goal_viz: bool = True
+
+    # Metric-depth augmentation, applied before clipping/window normalization.
+    # Profiles are resolved in scene_utils:
+    #   off     -> no noise
+    #   weak    -> barely visible sanity-check noise
+    #   medium  -> intended realistic training noise
+    #   strong  -> obviously visible debug noise
+    #   custom  -> use the explicit fields below
+    depth_noise_profile: str = "off"
+    depth_noise_strength: float = 1.0
+    depth_noise_gaussian_std_m: float = 0.002
+    depth_noise_correlated_std_m: float = 0.003
+    depth_noise_correlated_kernel_size: int = 5
+    depth_noise_dropout_prob: float = 0.003
+    depth_noise_randu_prob: float = 0.003
+    depth_noise_randu_min_m: float = 0.50
+    depth_noise_randu_max_m: float = 1.30
+    depth_noise_stick_prob: float = 0.00025
+    depth_noise_stick_max_len_px: int = 18
+    depth_noise_stick_max_width_px: int = 3
+    depth_noise_max_sticks_per_image: int = 8
+
+    # Per-env camera extrinsic randomization. With "startup", each env samples
+    # one fixed camera pose lazily before first image read. With "reset", envs
+    # resample on reset, matching DEXTRAH's TiledCamera.set_world_poses pattern.
+    camera_pose_randomization_profile: str = "off"  # off | weak | medium | strong | custom
+    camera_pose_randomization_mode: str = "startup"  # startup | reset
+    camera_pos_noise_m: tuple[float, float, float] = (0.01, 0.01, 0.01)
+    camera_rot_noise_deg: tuple[float, float, float] = (1.0, 1.0, 1.0)
+
+    camera_backend: str = "tiled"  # "tiled" | "standard"
+    camera_mount: str = "world"
+    camera_convention: str = "ros"
+    camera_pos: tuple[float, float, float] = (0.0, -1.0, 1.0)
+    camera_quat_wxyz: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0)
+
+    focal_length: float = 24.0
+    horizontal_aperture: float = 33.19737869997174
+    focus_distance: float = 400.0
+    clipping_range: tuple[float, float] = (0.1, 5.0)
+
+
+# ----------------------------------------------------------------------------
+# action
+# ----------------------------------------------------------------------------
+
+
+@configclass
+class ActionCfg:
+    """Joint-position-target control with moving-average smoothing."""
+
+    arm_moving_average: float = 0.1
+    hand_moving_average: float = 0.1
+    dof_speed_scale: float = 1.5
+
+
+# ----------------------------------------------------------------------------
+# reward
+# ----------------------------------------------------------------------------
+
+
+@configclass
+class RewardCfg:
+    """Four-term reward: keypoint + lifting (w/ bonus) + distance-delta +
+    reach-goal bonus + action-magnitude penalties.
+    """
+
+    keypoint_rew_scale: float = 200.0
+    keypoint_scale: float = 1.5
+    object_base_size: float = 0.04
+    fixed_size: tuple[float, float, float] = (0.141, 0.03025, 0.0271)
+    fixed_size_keypoint_reward: bool = True
+
+    lifting_rew_scale: float = 20.0
+    lifting_bonus: float = 300.0
+    lifting_bonus_threshold: float = 0.15
+
+    distance_delta_rew_scale: float = 50.0
+    reach_goal_bonus: float = 1000.0
+
+    kuka_actions_penalty_scale: float = 0.03
+    hand_actions_penalty_scale: float = 0.003
+
+
+# ----------------------------------------------------------------------------
+# reset (includes goal sampling — both fire on _reset_idx)
+# ----------------------------------------------------------------------------
+
+
+@configclass
+class ResetCfg:
+    """Initial-state distribution + goal sampling (sampled at every reset)."""
+
+    # Initial object pose noise
+    reset_position_noise_x: float = 0.1
+    reset_position_noise_y: float = 0.1
+    reset_position_noise_z: float = 0.02
+    fixed_start_pose: tuple[float, float, float, float, float, float, float] | None = None
+    object_orientation_mode: str = "full"  # full | yaw_only
+    object_yaw_range_degrees: float = 180.0
+
+    # Joint state noise on reset
+    reset_dof_pos_random_interval_arm: float = 0.1
+    reset_dof_pos_random_interval_fingers: float = 0.1
+    reset_dof_vel_random_interval: float = 0.5
+
+    # Table reset geometry
+    table_reset_z: float = 0.38
+    table_reset_z_range: float = 0.01
+    table_object_z_offset: float = 0.25
+
+    # Goal sampling
+    goal_sampling_type: str = "delta"  # "delta" | "absolute"
+    delta_goal_distance: float = 0.1
+    delta_rotation_degrees: float = 90.0
+    target_volume_mins: tuple[float, float, float] = (-0.35, -0.2, 0.6)
+    target_volume_maxs: tuple[float, float, float] = (0.35, 0.2, 0.95)
+    target_volume_region_scale: float = 1.0
+
+    # Debug only — when set, every reset writes this exact env-local pose
+    # to GoalViz instead of sampling. Format: (x, y, z, qw, qx, qy, qz).
+    # Used by debug_differences/* to keep both envs visually aligned.
+    fixed_goal_pose: tuple[float, float, float, float, float, float, float] | None = None
+
+    # Optional fixed pose for cfg.assets.fixture_usd_path. Format matches
+    # fixed_goal_pose: (x, y, z, qw, qx, qy, qz), env-local.
+    fixed_fixture_pose: tuple[float, float, float, float, float, float, float] | None = None
+
+
+# ----------------------------------------------------------------------------
+# termination (includes tolerance curriculum — governs success criterion)
+# ----------------------------------------------------------------------------
+
+
+@configclass
+class TerminationCfg:
+    """Episode-end conditions + success-tolerance curriculum.
+
+    The episode-length-extends-on-goal-hit behavior (legacy
+    ``progress_buf[is_success > 0] = 0`` at env.py:2503-2505) lands in
+    Phase F's ``_get_dones`` — there it zeros ``self.episode_length_buf``
+    for envs that hit a goal, so the framework's default truncation check
+    only fires on *time without progress*, not on total time in episode.
+    """
+
+    episode_length: int = 600  # steps (policy steps; 600 * decimation * dt = 10s)
+
+    success_tolerance: float = 0.075  # curriculum start
+    target_success_tolerance: float = 0.01  # curriculum floor
+    eval_success_tolerance: float | None = None
+
+    success_steps: int = 10
+    max_consecutive_successes: int = 50
+    force_consecutive_near_goal_steps: bool = False
+    auto_goal_reset_on_success: bool = True
+
+    # Tolerance curriculum (the only curriculum in v1).
+    tolerance_curriculum_increment: float = 0.9  # multiplicative per step
+    tolerance_curriculum_interval: int = 3000  # env steps across all agents
+    tolerance_curriculum_success_threshold: float = 3.0
+
+
+# ----------------------------------------------------------------------------
+# domain_randomization
+# ----------------------------------------------------------------------------
+
+
+@configclass
+class DomainRandomizationCfg:
+    """Sim2real DR set. Scoped to per-episode / per-step perturbations that
+    the paper identifies as essential for transfer. Physics-param DR (gravity,
+    DOF damping/stiffness/effort/friction/armature, rigid-body mass,
+    rigid-shape friction/restitution) is *not* ported in v1.
+    """
+
+    # Obs / action latency
+    use_obs_delay: bool = True
+    obs_delay_max: int = 3
+    use_action_delay: bool = True
+    action_delay_max: int = 3
+
+    # Object state delay + noise on the observed object pose.
+    use_object_state_delay_noise: bool = True
+    object_state_delay_max: int = 10
+    object_state_xyz_noise_std: float = 0.01
+    object_state_rotation_noise_degrees: float = 5.0
+    # Multiplicative per-env scale noise applied to keypoint offsets and to the
+    # object_scales obs (legacy env.py:3093-3098,3193-3195).
+    object_scale_noise_multiplier_range: tuple[float, float] = (1.0, 1.0)
+
+    # Per-step Gaussian noise on joint-velocity obs (legacy env.py:3251).
+    joint_velocity_obs_noise_std: float = 0.1
+
+    # Random force/torque impulses on the object body.
+    force_scale: float = 20.0
+    force_prob_range: tuple[float, float] = (0.001, 0.1)
+    force_decay: float = 0.0
+    force_decay_interval: float = 0.08
+    force_only_when_lifted: bool = True
+
+    torque_scale: float = 2.0
+    torque_prob_range: tuple[float, float] = (0.001, 0.1)
+    torque_decay: float = 0.0
+    torque_decay_interval: float = 0.08
+    torque_only_when_lifted: bool = True
+
+
+# ----------------------------------------------------------------------------
+# Top-level configclass — composes the above, plus DirectRLEnvCfg requireds
+# ----------------------------------------------------------------------------
+
+
+def _default_sim_cfg() -> SimulationCfg:
+    """60 Hz policy control / 120 Hz physics (matches legacy dt=1/60 + substeps=2)."""
+    return SimulationCfg(
+        dt=1.0 / 120.0,
+        render_interval=2,
+        gravity=(0.0, 0.0, -9.81),
+        physx=PhysxCfg(
+            solver_type=1,  # 1 = TGS (matches legacy)
+            min_position_iteration_count=8,
+            max_position_iteration_count=8,
+            min_velocity_iteration_count=0,
+            max_velocity_iteration_count=0,
+            bounce_threshold_velocity=0.2,
+            friction_offset_threshold=0.04,
+            friction_correlation_distance=0.025,
+        ),
+    )
+
+
+@configclass
+class SimToolRealEnvCfg(DirectRLEnvCfg):
+    """Top-level configclass for the SimToolReal goal-pose-reaching env.
+
+    Structure mirrors ``cfg/task/SimToolReal.yaml`` exactly — YAML overlay
+    key paths resolve to these fields via ``configclass.from_dict``.
+    """
+
+    # --- DirectRLEnvCfg required fields ---
+    decimation: int = 2  # 2 physics substeps per policy step
+    episode_length_s: float = 10.0  # 600 policy steps * 2 * (1/120) = 10s
+    action_space: int = 29  # 7-DOF IIWA + 22-DOF SHARPA hand
+    # Obs/state sizes are derived from obs.obs_list / obs.state_list at env init.
+    # Placeholder keeps the configclass instantiable before the env computes the
+    # final spaces.
+    observation_space: int = 140
+    state_space: int = 140
+
+    # --- Isaac Lab base fields ---
+    sim: SimulationCfg = _default_sim_cfg()
+    # Viewer is the camera DirectRLEnv.render('rgb_array') captures from. One
+    # render product (omni.replicator) is lazily allocated at this prim path
+    # on first render() call — single buffer, num_envs-independent. eye/lookat
+    # are world-frame; with replicate_physics=False the central env sits near
+    # world origin at large num_envs, so framing the table/robot here works.
+    viewer: ViewerCfg = ViewerCfg(
+        eye=(0.5, -1.5, 1.2),
+        lookat=(0.0, 0.4, 0.5),
+        resolution=(640, 480),
+    )
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(
+        num_envs=8192,
+        env_spacing=1.2,
+        # Per-env distinct USDs (MultiUsdFileCfg) require:
+        #  - replicate_physics=False so PhysX parses each env as its own
+        #    subtree (otherwise variants collapse into a single template;
+        #    Isaac Lab also emits a hard warning — see
+        #    isaaclab/scene/interactive_scene.py).
+        #  - clone_in_fabric=False so the cloner replicates env_0 into the
+        #    USD stage (not just Fabric). MultiUsdFileCfg's spawner resolves
+        #    the regex prim_path via find_matching_prim_paths, which only
+        #    sees USD prims; with clone_in_fabric=True env_1..env_{N-1}
+        #    exist only in Fabric and the multi-asset spawn lands in env_0.
+        replicate_physics=False,
+        clone_in_fabric=False,
+    )
+
+    # --- Sectioned sub-configs (mirror YAML sections 1:1) ---
+    assets: AssetsCfg = AssetsCfg()
+    obs: ObsCfg = ObsCfg()
+    student_obs: StudentObsCfg = StudentObsCfg()
+    action: ActionCfg = ActionCfg()
+    reward: RewardCfg = RewardCfg()
+    reset: ResetCfg = ResetCfg()
+    termination: TerminationCfg = TerminationCfg()
+    domain_randomization: DomainRandomizationCfg = DomainRandomizationCfg()
+
+
+__all__ = [
+    "SimToolRealEnvCfg",
+    "AssetsCfg",
+    "ObsCfg",
+    "StudentObsCfg",
+    "ActionCfg",
+    "RewardCfg",
+    "ResetCfg",
+    "TerminationCfg",
+    "DomainRandomizationCfg",
+]

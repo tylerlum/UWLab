@@ -1,0 +1,16 @@
+modality: rgbd
+mount: wrist
+link_name: iiwa14_link_7
+convention: ros
+width: 960
+height: 540
+focal_length: 24.0
+horizontal_aperture: 33.19737869997174
+focus_distance: 400.0
+clipping_range: [0.1, 100.0]
+pose:
+  # Wrist debug camera candidate v7.
+  # Same position as v6, tilted up about the local camera X axis so it sees
+  # more hand/fingers and less table.
+  pos: [0.0, -0.02, -0.04]
+  quat_wxyz: [0.018008069494055486, 0.13982433676528389, -0.12645989295235346, 0.9819026223387557]

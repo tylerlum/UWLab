@@ -1,0 +1,15 @@
+modality: rgbd
+mount: wrist
+link_name: iiwa14_link_7
+convention: ros
+width: 320
+height: 180
+focal_length: 24.0
+horizontal_aperture: 33.19737869997174
+focus_distance: 400.0
+clipping_range: [0.1, 100.0]
+pose:
+  # V7-derived wrist camera, moved lower in link-7 local -Y and aimed slightly right.
+  # Optical axis in link-7 frame is approximately [-0.10, -0.25, 0.96].
+  pos: [0.0, -0.05, -0.04]
+  quat_wxyz: [-0.006516440537823621, -0.051300357106373005, -0.125844078175285, 0.9907013058191094]

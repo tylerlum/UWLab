@@ -1,0 +1,178 @@
+#!/bin/bash
+#SBATCH -N 1
+#SBATCH -n 1
+#SBATCH --cpus-per-task=12
+#SBATCH --get-user-env
+#SBATCH --mem=500000
+#SBATCH -t 12-00:00:00
+#SBATCH --partition=portal
+#SBATCH --exclude=portal-compute-01
+#SBATCH --gres=gpu:1
+#SBATCH -o /dev/null
+#SBATCH -e /dev/null
+
+# ╔══════════════════════════════════════════════════════════════╗
+# ║  isaacsimenvs SimToolReal pretraining — SAPG, from scratch   ║
+# ║  Mirrors fabrica/.../insertion_dr_pre_insert_and_final.sub   ║
+# ║  layout: explicit DR knobs + 24576 envs + 16M contact pairs. ║
+# ║  Picks up post-fix scene_utils (contact_offset/rest_offset   ║
+# ║  re-authored leaf-by-leaf after un-instancing).              ║
+# ╚══════════════════════════════════════════════════════════════╝
+
+# ── Train / algo ─────────────────────────────────────────────
+TASK_ID="Isaacsimenvs-SimToolReal-Direct-v0"
+AGENT_KEY="rl_games_sapg_cfg_entry_point"
+NUM_ENVS=24576                    # matches legacy pretraining + fabrica reference
+MINIBATCH_SIZE=98304              # SAPG cfg default
+MAX_ITERATIONS=1000000            # cfg default; walltime caps the run
+SEED=42
+
+# GPU PhysX contact-pair buffer. Lab default = 2^23 (8M); for 24576 envs
+# in close-contact grasping we follow the fabrica pretraining precedent
+# (16M). All other SAPG knobs (use_others_experience, off_policy_ratio,
+# expl_*, fixed_sigma=coef_cond) are already baked into
+# cfg/train/SimToolRealSAPG.yaml so no CLI override needed.
+GPU_MAX_RIGID_CONTACT_COUNT=16777216
+GPU_MAX_RIGID_PATCH_COUNT=8388608
+
+# ── Domain randomization ─────────────────────────────────────
+# Defaults below match the SimToolReal cfg (`simtoolreal_env_cfg.py`).
+# Legacy pretraining (`pretrained_policy/config.yaml`) used a smaller
+# `forceScale=2` and `jointVelocityObsNoiseStd=0.01` — flip below if
+# you want to mirror that regime exactly.
+FORCE_SCALE=20.0                  # cfg default; legacy pretraining used 2
+TORQUE_SCALE=2.0                  # cfg default
+USE_OBS_DELAY=True
+USE_ACTION_DELAY=True
+USE_OBJECT_STATE_DELAY_NOISE=True
+OBJECT_STATE_XYZ_NOISE_STD=0.01
+OBJECT_STATE_ROTATION_NOISE_DEG=5.0
+JOINT_VELOCITY_OBS_NOISE_STD=0.1  # cfg default; legacy used 0.01
+OBJECT_SCALE_NOISE_RANGE="[1.0,1.0]"  # cfg default; widen e.g. [0.9,1.1]
+
+# ── Reset randomization ──────────────────────────────────────
+RESET_POSITION_NOISE_X=0.1
+RESET_POSITION_NOISE_Y=0.1
+RESET_POSITION_NOISE_Z=0.02
+RESET_DOF_POS_NOISE_ARM=0.1
+RESET_DOF_POS_NOISE_FINGERS=0.1
+RESET_DOF_VEL_NOISE=0.5
+TABLE_RESET_Z_RANGE=0.01
+
+# ── Weights & Biases ─────────────────────────────────────────
+WANDB_PROJECT="isaacsimenvs"
+WANDB_GROUP="simtoolreal_pretraining"
+EXPERIMENT_TAG="simtoolreal_pretraining"
+
+# ── Pose-only interactive viewer ─────────────────────────────
+# Writes tensor-state → Three.js HTML/W&B artifacts. This does not use Isaac
+# cameras, Replicator, RTX sensors, or --enable_cameras.
+CAPTURE_VIEWER_LEN=600
+CAPTURE_VIEWER_INTERVAL=6000
+CAPTURE_VIEWER_ENV_ID=0
+CAPTURE_VIEWER_WANDB_KEY="interactive_viewer"
+
+# ╔══════════════════════════════════════════════════════════════╗
+# ║         END CONFIG — generally don't edit below here        ║
+# ╚══════════════════════════════════════════════════════════════╝
+
+set -euo pipefail
+
+REPO_ROOT="/share/portal/kk837/depthbasedRL"
+
+# ── Derived: experiment name & logging ───────────────────────
+DATETIME=$(date +"%Y-%m-%d_%H-%M-%S")
+EXPERIMENT_NAME="${EXPERIMENT_TAG}_${DATETIME}"
+if [ -n "${SLURM_JOB_ID:-}" ]; then
+    scontrol update JobId="$SLURM_JOB_ID" JobName="$EXPERIMENT_NAME" || true
+fi
+HYDRA_RUN_DIR="${REPO_ROOT}/train_dir/${WANDB_PROJECT}/${WANDB_GROUP}/${EXPERIMENT_NAME}"
+mkdir -p "$HYDRA_RUN_DIR"
+exec > "${HYDRA_RUN_DIR}/slurm.log" 2> "${HYDRA_RUN_DIR}/slurm.err"
+
+# ── GPU monitoring (background) ─────────────────────────────
+echo "=== Initial GPU State ==="
+nvidia-smi
+echo ""
+
+GPU_LOG="${HYDRA_RUN_DIR}/gpu_usage.log"
+(
+    while true; do
+        echo "=== $(date '+%Y-%m-%d %H:%M:%S') ===" >> "$GPU_LOG"
+        nvidia-smi --query-gpu=memory.used,memory.total,memory.free,utilization.gpu,temperature.gpu \
+            --format=csv,noheader >> "$GPU_LOG" 2>&1
+        sleep 30
+    done
+) &
+GPU_MONITOR_PID=$!
+
+# ── RAM monitoring (background) ─────────────────────────────
+# Diagnostic for the OOM kills we hit at ~2 hr / 60 GB on the prior runs.
+# Logs:
+#   - free -m: node-wide total/used/avail
+#   - top 5 RSS processes: who's holding memory
+#   - sstat MaxRSS for this slurm job: cgroup-tracked usage (slurm's
+#     --mem cap is enforced via cgroup, so this is the value that
+#     actually triggers OOM)
+RAM_LOG="${HYDRA_RUN_DIR}/ram_usage.log"
+(
+    while true; do
+        echo "=== $(date '+%Y-%m-%d %H:%M:%S') ===" >> "$RAM_LOG"
+        free -m | head -2 >> "$RAM_LOG" 2>&1
+        ps -eo pid,rss,comm --sort=-rss --no-headers 2>/dev/null | head -5 >> "$RAM_LOG"
+        if [ -n "${SLURM_JOB_ID:-}" ] && command -v sstat >/dev/null 2>&1; then
+            sstat -j "$SLURM_JOB_ID" --format=MaxRSS,AveRSS --noheader 2>/dev/null >> "$RAM_LOG" || true
+        fi
+        sleep 30
+    done
+) &
+RAM_MONITOR_PID=$!
+
+trap "kill $GPU_MONITOR_PID $RAM_MONITOR_PID 2>/dev/null" EXIT
+
+# ── Isaac Sim env ────────────────────────────────────────────
+cd "$REPO_ROOT"
+source .venv_isaacsim/bin/activate
+export OMNI_KIT_ACCEPT_EULA=YES
+export OMNI_KIT_CACHE_PATH="/tmp/${USER}_ov_cache"
+mkdir -p "$OMNI_KIT_CACHE_PATH"
+
+# ── Launch training ──────────────────────────────────────────
+# load_checkpoint=False is the cfg default → from scratch.
+python -u isaacsimenvs/train.py \
+    --task "$TASK_ID" \
+    --agent "$AGENT_KEY" \
+    --headless \
+    --capture_viewer \
+    --capture_viewer_len "$CAPTURE_VIEWER_LEN" \
+    --capture_viewer_interval "$CAPTURE_VIEWER_INTERVAL" \
+    --capture_viewer_env_id "$CAPTURE_VIEWER_ENV_ID" \
+    --capture_viewer_wandb_key "$CAPTURE_VIEWER_WANDB_KEY" \
+    --wandb_activate \
+    --wandb_project "$WANDB_PROJECT" \
+    --wandb_group "$WANDB_GROUP" \
+    --wandb_entity kk837 \
+    --wandb_name "$EXPERIMENT_NAME" \
+    env.scene.num_envs=$NUM_ENVS \
+    env.sim.physx.gpu_max_rigid_contact_count=$GPU_MAX_RIGID_CONTACT_COUNT \
+    env.sim.physx.gpu_max_rigid_patch_count=$GPU_MAX_RIGID_PATCH_COUNT \
+    env.domain_randomization.force_scale=$FORCE_SCALE \
+    env.domain_randomization.torque_scale=$TORQUE_SCALE \
+    env.domain_randomization.use_obs_delay=$USE_OBS_DELAY \
+    env.domain_randomization.use_action_delay=$USE_ACTION_DELAY \
+    env.domain_randomization.use_object_state_delay_noise=$USE_OBJECT_STATE_DELAY_NOISE \
+    env.domain_randomization.object_state_xyz_noise_std=$OBJECT_STATE_XYZ_NOISE_STD \
+    env.domain_randomization.object_state_rotation_noise_degrees=$OBJECT_STATE_ROTATION_NOISE_DEG \
+    env.domain_randomization.joint_velocity_obs_noise_std=$JOINT_VELOCITY_OBS_NOISE_STD \
+    "env.domain_randomization.object_scale_noise_multiplier_range=$OBJECT_SCALE_NOISE_RANGE" \
+    env.reset.reset_position_noise_x=$RESET_POSITION_NOISE_X \
+    env.reset.reset_position_noise_y=$RESET_POSITION_NOISE_Y \
+    env.reset.reset_position_noise_z=$RESET_POSITION_NOISE_Z \
+    env.reset.reset_dof_pos_random_interval_arm=$RESET_DOF_POS_NOISE_ARM \
+    env.reset.reset_dof_pos_random_interval_fingers=$RESET_DOF_POS_NOISE_FINGERS \
+    env.reset.reset_dof_vel_random_interval=$RESET_DOF_VEL_NOISE \
+    env.reset.table_reset_z_range=$TABLE_RESET_Z_RANGE \
+    agent.params.config.max_epochs=$MAX_ITERATIONS \
+    agent.params.config.minibatch_size=$MINIBATCH_SIZE \
+    agent.params.seed=$SEED \
+    hydra.run.dir="$HYDRA_RUN_DIR"

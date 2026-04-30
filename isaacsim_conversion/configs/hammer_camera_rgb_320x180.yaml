@@ -1,0 +1,9 @@
+modality: rgb
+pose_source: real_camera_t_w_c
+convention: ros
+width: 320
+height: 180
+focal_length: 24.0
+horizontal_aperture: 33.19737869997174
+focus_distance: 400.0
+clipping_range: [0.1, 100.0]
