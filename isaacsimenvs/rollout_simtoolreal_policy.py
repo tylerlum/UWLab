@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from scipy.spatial.transform import Rotation as R
+from scipy.spatial.transform import Rotation as R, Slerp
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -94,6 +94,27 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--render_each_step", action="store_true")
     parser.add_argument("--keypoint_tolerance", type=float, default=0.015)
     parser.add_argument("--success_steps", type=int, default=10)
+    parser.add_argument(
+        "--robot_control_mode",
+        choices=("policy", "hold_current", "hold_default"),
+        default="policy",
+        help="Run policy actions normally, or hold fixed Lab-order joint targets.",
+    )
+    parser.add_argument(
+        "--object_drive_mode",
+        choices=("policy", "teleport_trajectory"),
+        default="policy",
+        help="Run normal policy-driven object motion, or script object poses through the planned trajectory.",
+    )
+    parser.add_argument("--teleport_interval_s", type=float, default=1.0)
+    parser.add_argument("--teleport_waypoints_per_segment", type=int, default=1)
+    parser.add_argument(
+        "--teleport_write_every_step",
+        action="store_true",
+        help="Interpolate and write the object pose every policy step instead of only at waypoint intervals.",
+    )
+    parser.add_argument("--teleport_keep_velocity", action="store_true")
+    parser.add_argument("--ignore_dones", action="store_true")
 
     parser.add_argument("--leg_hole_index", type=int, default=0, choices=range(4))
     parser.add_argument("--leg_hover_height", type=float, default=0.12)
@@ -169,6 +190,27 @@ def _quat_multiply_xyzw(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 
 def _quat_matrix_xyzw(matrix: np.ndarray) -> np.ndarray:
     return R.from_matrix(matrix).as_quat().astype(np.float32)
+
+
+def _interpolate_pose_xyzw(a: np.ndarray, b: np.ndarray, fraction: float) -> np.ndarray:
+    a = np.asarray(a, dtype=np.float32)
+    b = np.asarray(b, dtype=np.float32)
+    t = float(np.clip(fraction, 0.0, 1.0))
+    pos = (1.0 - t) * a[:3] + t * b[:3]
+    slerp = Slerp([0.0, 1.0], R.from_quat(np.stack([a[3:7], b[3:7]], axis=0)))
+    quat = slerp([t]).as_quat()[0].astype(np.float32)
+    return np.concatenate([pos.astype(np.float32), quat]).astype(np.float32)
+
+
+def _densify_pose_sequence_xyzw(poses: list[np.ndarray], per_segment: int) -> list[np.ndarray]:
+    if not poses:
+        return []
+    steps = max(1, int(per_segment))
+    dense = [np.asarray(poses[0], dtype=np.float32)]
+    for start, end in zip(poses[:-1], poses[1:], strict=True):
+        for i in range(1, steps + 1):
+            dense.append(_interpolate_pose_xyzw(start, end, i / steps))
+    return dense
 
 
 def _policy_to_leg_asset_pose_xyzw(policy_pose: np.ndarray) -> np.ndarray:
@@ -482,6 +524,37 @@ def _write_goal(inner, args, goal_policy_xyzw: np.ndarray) -> None:
     _clear_goal_trackers(inner, env_ids)
 
 
+def _write_object_pose(inner, args, object_policy_xyzw: np.ndarray, *, zero_velocity: bool) -> None:
+    import torch
+
+    object_asset_xyzw = _policy_goal_to_asset_goal(args, object_policy_xyzw)
+    env_ids = torch.arange(inner.num_envs, device=inner.device, dtype=torch.long)
+    pose = torch.tensor(
+        [pose_xyzw_to_wxyz(object_asset_xyzw)],
+        device=inner.device,
+        dtype=torch.float32,
+    ).expand(inner.num_envs, -1).clone()
+    pose[:, 0:3] += inner.scene.env_origins
+    inner.object.write_root_pose_to_sim(pose, env_ids=env_ids)
+    if zero_velocity:
+        inner.object.write_root_velocity_to_sim(
+            torch.zeros(inner.num_envs, 6, device=inner.device),
+            env_ids=env_ids,
+        )
+
+
+def _teleport_pose_for_step(teleport_poses: list[np.ndarray], step: int, interval_steps: int) -> tuple[int, np.ndarray]:
+    segment = min(step // interval_steps, max(0, len(teleport_poses) - 1))
+    if segment >= len(teleport_poses) - 1:
+        return segment, teleport_poses[-1]
+    fraction = (step % interval_steps) / float(interval_steps)
+    return segment, _interpolate_pose_xyzw(
+        teleport_poses[segment],
+        teleport_poses[segment + 1],
+        fraction,
+    )
+
+
 def main() -> int:
     import gymnasium as gym
     import torch
@@ -490,7 +563,7 @@ def main() -> int:
     from deployment.rl_player import RlPlayer
 
     args = _args
-    cfg, _start_pose, goals, object_scale = _make_cfg(args)
+    cfg, start_pose, goals, object_scale = _make_cfg(args)
 
     env = gym.make("Isaacsimenvs-SimToolReal-Direct-v0", cfg=cfg)
     inner = env.unwrapped
@@ -514,6 +587,27 @@ def main() -> int:
     _write_goal(inner, args, goals[0])
     obs = inner._get_observations()
 
+    if args.robot_control_mode == "hold_current":
+        inner._replay_target_lab_order = inner.robot.data.joint_pos.detach().clone()
+    elif args.robot_control_mode == "hold_default":
+        inner._replay_target_lab_order = inner.robot.data.default_joint_pos.detach().clone()
+
+    teleport_poses: list[np.ndarray] = []
+    teleport_interval_steps = max(1, int(round(float(args.teleport_interval_s) / float(inner.step_dt))))
+    if args.object_drive_mode == "teleport_trajectory":
+        teleport_poses = _densify_pose_sequence_xyzw(
+            [np.asarray(start_pose, dtype=np.float32), *goals],
+            int(args.teleport_waypoints_per_segment),
+        )
+        _write_object_pose(
+            inner,
+            args,
+            teleport_poses[0],
+            zero_velocity=not bool(args.teleport_keep_velocity),
+        )
+        _write_goal(inner, args, teleport_poses[0])
+        obs = inner._get_observations()
+
     out_dir = Path(args.out_dir) / args.scenario
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -525,17 +619,61 @@ def main() -> int:
     kp_dist_log: list[float] = []
     env_kp_dist_log: list[float] = []
     goal_idx_log: list[int] = []
+    teleport_pose_log: list[np.ndarray] = []
 
     current_goal_idx = 0
+    teleport_goal_idx = 0
     near_goal_steps = 0
     print(
         f"[rollout] scenario={args.scenario} max_steps={args.max_steps} "
         f"goals={len(goals)} checkpoint={args.checkpoint} "
-        f"leg_physics_profile={getattr(args, 'leg_physics_profile', 'n/a')}",
+        f"leg_physics_profile={getattr(args, 'leg_physics_profile', 'n/a')} "
+        f"robot_control_mode={args.robot_control_mode} "
+        f"object_drive_mode={args.object_drive_mode}",
         flush=True,
     )
+    if teleport_poses:
+        print(
+            f"[rollout] teleport trajectory poses={len(teleport_poses)} "
+            f"interval_steps={teleport_interval_steps} "
+            f"interval_s={teleport_interval_steps * inner.step_dt:.3f} "
+            f"write_every_step={bool(args.teleport_write_every_step)}",
+            flush=True,
+        )
 
     for step in range(int(args.max_steps)):
+        active_teleport_pose = None
+        if teleport_poses:
+            if args.teleport_write_every_step:
+                teleport_goal_idx, active_teleport_pose = _teleport_pose_for_step(
+                    teleport_poses, step, teleport_interval_steps
+                )
+                _write_object_pose(
+                    inner,
+                    args,
+                    active_teleport_pose,
+                    zero_velocity=not bool(args.teleport_keep_velocity),
+                )
+                if step % teleport_interval_steps == 0:
+                    _write_goal(inner, args, active_teleport_pose)
+                    obs = inner._get_observations()
+            elif step % teleport_interval_steps == 0:
+                teleport_goal_idx = min(step // teleport_interval_steps, len(teleport_poses) - 1)
+                active_teleport_pose = teleport_poses[teleport_goal_idx]
+                _write_object_pose(
+                    inner,
+                    args,
+                    active_teleport_pose,
+                    zero_velocity=not bool(args.teleport_keep_velocity),
+                )
+                _write_goal(inner, args, active_teleport_pose)
+                obs = inner._get_observations()
+                print(
+                    f"[rollout] step={step:4d} teleported object pose "
+                    f"{teleport_goal_idx}/{len(teleport_poses) - 1}",
+                    flush=True,
+                )
+
         policy_obs = obs["policy"].to(args.rl_device)
         action = player.get_normalized_action(policy_obs, deterministic_actions=True)
         obs, reward, terminated, truncated, info = env.step(action.to(inner.device))
@@ -563,7 +701,7 @@ def main() -> int:
         object_pose_policy_xyzw = _asset_pose_wxyz_to_policy_xyzw(args, object_pose_asset_wxyz)
         goal_pose_policy_xyzw = _asset_pose_wxyz_to_policy_xyzw(args, goal_pose_asset_wxyz)
 
-        active_goal_idx = current_goal_idx
+        active_goal_idx = teleport_goal_idx if teleport_poses else current_goal_idx
         env_kp_dist = float(inner._keypoints_max_dist[0].detach().cpu().item())
         kp_dist = _keypoint_max_dist_xyzw(
             object_pose_policy_xyzw,
@@ -585,6 +723,10 @@ def main() -> int:
         kp_dist_log.append(kp_dist)
         env_kp_dist_log.append(env_kp_dist)
         goal_idx_log.append(active_goal_idx)
+        if active_teleport_pose is None and teleport_poses:
+            active_teleport_pose = teleport_poses[teleport_goal_idx]
+        if active_teleport_pose is not None:
+            teleport_pose_log.append(np.asarray(active_teleport_pose, dtype=np.float32))
 
         if step % 60 == 0:
             print(
@@ -595,7 +737,7 @@ def main() -> int:
                 flush=True,
             )
 
-        if near_goal_steps >= int(args.success_steps):
+        if not teleport_poses and near_goal_steps >= int(args.success_steps):
             print(
                 f"[rollout] step={step} reached goal {active_goal_idx} "
                 f"kp_dist={kp_dist:.4f} env_kp={env_kp_dist:.4f}",
@@ -609,7 +751,7 @@ def main() -> int:
             _write_goal(inner, args, goals[current_goal_idx])
             obs = inner._get_observations()
 
-        if bool(terminated[0].item()) or bool(truncated[0].item()):
+        if (bool(terminated[0].item()) or bool(truncated[0].item())) and not bool(args.ignore_dones):
             print(
                 f"[rollout] env ended at step={step} "
                 f"terminated={bool(terminated[0].item())} truncated={bool(truncated[0].item())}",
@@ -629,8 +771,13 @@ def main() -> int:
         env_kp_dists=np.asarray(env_kp_dist_log, dtype=np.float32),
         goal_idxs=np.asarray(goal_idx_log, dtype=np.int32),
         goals_policy_xyzw=np.asarray(goals, dtype=np.float32),
+        teleport_poses_policy_xyzw=np.asarray(teleport_poses, dtype=np.float32),
+        commanded_teleport_poses_policy_xyzw=np.asarray(teleport_pose_log, dtype=np.float32),
+        teleport_interval_steps=np.asarray([teleport_interval_steps], dtype=np.int32),
         object_scale=np.asarray(object_scale, dtype=np.float32),
         scenario=args.scenario,
+        robot_control_mode=args.robot_control_mode,
+        object_drive_mode=args.object_drive_mode,
     )
     print(f"[rollout] wrote {npz_path}", flush=True)
 
