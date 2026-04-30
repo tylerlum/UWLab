@@ -355,7 +355,11 @@ def _apply_omnireset_leg_physics_profile(cfg) -> None:
     cfg.sim.physx.gpu_max_rigid_patch_count = 2**23
     cfg.sim.physx.gpu_collision_stack_size = 2**31
 
-    cfg.assets.object_mass = 0.001
+    # OmniReset spawns the insertive object at 1 g, then its inherited startup
+    # mass event overwrites the runtime mass with an absolute 20-200 g sample.
+    # Use a fixed in-range value here to keep this deterministic rollout
+    # representative without copying the full reset-event randomization system.
+    cfg.assets.object_mass = 0.05
     cfg.assets.fixture_mass = 0.5
     cfg.assets.object_solver_position_iteration_count = 4
     cfg.assets.object_solver_velocity_iteration_count = 0
