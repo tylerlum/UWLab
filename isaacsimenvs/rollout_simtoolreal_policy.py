@@ -92,6 +92,20 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--video_fps", type=int, default=30)
     parser.add_argument("--frame_every", type=int, default=2)
     parser.add_argument("--render_each_step", action="store_true")
+    goal_viz_group = parser.add_mutually_exclusive_group()
+    goal_viz_group.add_argument(
+        "--show_goal_viz",
+        dest="goal_viz_visible",
+        action="store_true",
+        default=True,
+        help="Render the goal pose object.",
+    )
+    goal_viz_group.add_argument(
+        "--hide_goal_viz",
+        dest="goal_viz_visible",
+        action="store_false",
+        help="Hide the goal pose object from viewer/video while keeping it available for observations.",
+    )
     parser.add_argument("--keypoint_tolerance", type=float, default=0.015)
     parser.add_argument("--success_steps", type=int, default=10)
     parser.add_argument(
@@ -506,6 +520,27 @@ def _create_record_camera(inner):
     return camera
 
 
+def _set_goal_viz_visibility(visible: bool) -> None:
+    from isaaclab.sim.utils import find_matching_prim_paths, get_current_stage
+    from pxr import UsdGeom
+
+    stage = get_current_stage()
+    prim_paths = find_matching_prim_paths("/World/envs/env_.*/GoalViz")
+    for prim_path in prim_paths:
+        prim = stage.GetPrimAtPath(prim_path)
+        if not prim.IsValid():
+            continue
+        imageable = UsdGeom.Imageable(prim)
+        if visible:
+            imageable.MakeVisible()
+        else:
+            imageable.MakeInvisible()
+    print(
+        f"[rollout] goal_viz_visible={visible} prims={len(prim_paths)}",
+        flush=True,
+    )
+
+
 def _write_goal(inner, args, goal_policy_xyzw: np.ndarray) -> None:
     import torch
 
@@ -585,6 +620,7 @@ def main() -> int:
     obs, _ = env.reset()
     obs, _, _, _, _ = env.step(torch.zeros((cfg.scene.num_envs, cfg.action_space), device=inner.device))
     _write_goal(inner, args, goals[0])
+    _set_goal_viz_visibility(bool(args.goal_viz_visible))
     obs = inner._get_observations()
 
     if args.robot_control_mode == "hold_current":
@@ -778,6 +814,7 @@ def main() -> int:
         scenario=args.scenario,
         robot_control_mode=args.robot_control_mode,
         object_drive_mode=args.object_drive_mode,
+        goal_viz_visible=np.asarray([bool(args.goal_viz_visible)], dtype=np.bool_),
     )
     print(f"[rollout] wrote {npz_path}", flush=True)
 
