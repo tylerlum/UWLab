@@ -280,17 +280,95 @@ T_table_hole_to_leg_assembled =
 
 Then:
 
-- position success: `norm(relative_xyz) < 0.0025`
-- orientation success: `abs(roll) + abs(pitch) < 0.025`
-- yaw is intentionally ignored
+- `xyz_distance = norm(relative_xyz)`
+- `euler_xy_distance = abs(wrap(roll)) + abs(wrap(pitch))`
+- position success: `xyz_distance < 0.0025`
+- orientation success: `euler_xy_distance < 0.025`
+- task success: `position_success and orientation_success`
+- yaw is intentionally ignored, i.e. `yaw` from the relative quaternion is discarded.
 
 This means the reward/success checks that the leg is deep enough and upright enough, but it does not enforce a unique screw yaw phase at a given depth. The simulator contact model must provide the screw behavior. If a policy pushes straight down and the leg penetrates without spinning, OmniReset-style success alone would not catch that unless the penetration produces wrong position/tilt or instability.
 
-For our own reward, keep the OmniReset-style terminal metric for comparability, but add separate diagnostics or shaping for thread sanity:
+### Exact OmniReset success condition
+
+The precise boolean used by `ProgressContext` is:
+
+```python
+position_aligned = xyz_distance < success_position_threshold
+orientation_aligned = euler_xy_distance < success_orientation_threshold
+success = orientation_aligned & position_aligned
+```
+
+For `fbtabletop`, the thresholds come from metadata:
+
+```text
+success_position_threshold = 0.0025 m
+success_orientation_threshold = 0.025 rad
+```
+
+Important interpretation:
+
+- The 3D norm includes depth. The leg must be at the right final depth, not just centered over the hole.
+- The orientation condition only checks that the insertion axis is upright/aligned. It does not care about spin phase around that axis.
+- This is why yaw can be non-unique while success is still well-defined: success is an assembled-frame position plus roll/pitch condition, not a full 6-DoF pose match.
+- The code keeps a `continuous_success_counter`, but in the RL-state config success itself is not a termination. The listed terminations are timeout and abnormal robot state. Evaluation/play scripts may stop or log when they see success, but the task config does not terminate immediately just because success is true.
+
+### OmniReset dense and sparse reward terms
+
+The relevant state-task rewards are:
+
+```text
+0.1 * progress_context
+0.1 * ee_asset_distance_tanh
+0.1 * dense_success_reward
+1.0 * success_reward
+-1e-4 * action_l2_clamped
+-1e-3 * action_rate_l2_clamped
+-1e-2 * joint_vel_l2_clamped
+-100.0 * abnormal_robot_state
+```
+
+`progress_context` mostly computes and stores the success metrics; its call returns zeros, so the `0.1` weight does not add a direct dense reward.
+
+`ee_asset_distance_tanh` is a reach/grasp-style shaping term:
+
+```text
+1 - tanh(distance(end_effector_gripper_offset, insertive_object) / std)
+std = 1.0
+```
+
+`dense_success_reward` is:
+
+```text
+angle_term = exp(-euler_xy_distance / std)
+pos_term = exp(-xyz_distance / std)
+dense_success_reward = 0.5 * (angle_term + pos_term)
+std = 1.0
+```
+
+`success_reward` is the sparse binary reward:
+
+```text
+1.0 if orientation_aligned and position_aligned else 0.0
+```
+
+### Recommended SimToolReal leg success/reward
+
+For our own reward, keep the OmniReset-style terminal metric for comparability:
+
+```text
+assembled-frame position error < 2.5 mm
+assembled-frame roll/pitch error < 0.025 rad
+yaw ignored for terminal success
+require 3-5 consecutive policy steps for robust evaluation
+```
+
+Then add separate diagnostics or shaping for thread sanity:
 
 - Track downward progress after the leg is radially near the hole.
 - Track clockwise yaw progress about local policy `+x`.
 - Penalize depth progress without enough yaw progress if we specifically want to discourage thread penetration shortcuts.
+- Log straight-down penetration failures separately from normal policy failures. A rollout that reaches the final z without spinning is a physics/contact problem even if the OmniReset-style success metric says it is aligned.
 
 ## Collision and SDF Status
 
