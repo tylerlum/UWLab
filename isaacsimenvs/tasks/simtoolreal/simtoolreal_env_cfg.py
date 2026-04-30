@@ -80,15 +80,24 @@ class AssetsCfg:
     # Static per-material frictions (set once at asset creation, not per-reset DR).
     modify_asset_frictions: bool = True
     robot_friction: float = 0.5
+    robot_dynamic_friction: float | None = None
     finger_tip_friction: float = 1.5
+    finger_tip_dynamic_friction: float | None = None
     object_friction: float = 0.5
+    object_dynamic_friction: float | None = None
     table_friction: float = 0.5
+    table_dynamic_friction: float | None = None
+    fixture_friction: float = 0.5
+    fixture_dynamic_friction: float | None = None
 
     # Optional explicit object pool. When either of these is set, scene_utils
     # skips procedural handle-head generation and uses the supplied assets.
     object_urdf_paths: tuple[str, ...] = ()
     object_usd_paths: tuple[str, ...] = ()
     object_scales: tuple[tuple[float, float, float], ...] = ()
+    object_mass: float | None = None
+    object_solver_position_iteration_count: int | None = None
+    object_solver_velocity_iteration_count: int | None = None
 
     # Fixed transform from an object's physical asset root to the policy object
     # frame. This keeps the trusted isaacsimenvs mechanics intact while allowing
@@ -102,6 +111,9 @@ class AssetsCfg:
     # as the FurnitureBench tabletop that the leg screws into.
     fixture_usd_path: str = ""
     fixture_collision_enabled: bool = True
+    fixture_mass: float | None = None
+    fixture_solver_position_iteration_count: int | None = None
+    fixture_solver_velocity_iteration_count: int | None = None
 
 # ----------------------------------------------------------------------------
 # obs

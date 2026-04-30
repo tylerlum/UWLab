@@ -174,11 +174,35 @@ def build_robot_articulation_usd_cfg(usd_path: str) -> ArticulationCfg:
     )
 
 
-def build_rigid_object_cfg(prim_path: str, usd_paths: list[str]) -> RigidObjectCfg:
+def _optional_rigid_props(
+    *,
+    solver_position_iteration_count: int | None = None,
+    solver_velocity_iteration_count: int | None = None,
+):
+    kwargs = {}
+    if solver_position_iteration_count is not None:
+        kwargs["solver_position_iteration_count"] = int(solver_position_iteration_count)
+    if solver_velocity_iteration_count is not None:
+        kwargs["solver_velocity_iteration_count"] = int(solver_velocity_iteration_count)
+    if not kwargs:
+        return None
+    return sim_utils.RigidBodyPropertiesCfg(**kwargs)
+
+
+def build_rigid_object_cfg(
+    prim_path: str,
+    usd_paths: list[str],
+    *,
+    rigid_props=None,
+) -> RigidObjectCfg:
     """Spawn a RigidObject from one or more pre-baked USDs (round-robin)."""
     return RigidObjectCfg(
         prim_path=prim_path,
-        spawn=MultiUsdFileCfg(usd_path=list(usd_paths), random_choice=False),
+        spawn=MultiUsdFileCfg(
+            usd_path=list(usd_paths),
+            random_choice=False,
+            rigid_props=rigid_props,
+        ),
     )
 
 
@@ -753,6 +777,7 @@ def _bake_usd(
     baked_subdir: str,
     *,
     props: dict | None = None,
+    mass: float | None = None,
     apply_physx_articulation: bool = False,
     collision_enabled: bool | None = None,
 ) -> str:
@@ -803,6 +828,9 @@ def _bake_usd(
         is_art = prim.HasAPI(UsdPhysics.ArticulationRootAPI)
         if is_rb:
             PhysxSchema.PhysxRigidBodyAPI.Apply(prim)
+            if mass is not None:
+                mass_api = UsdPhysics.MassAPI(prim) or UsdPhysics.MassAPI.Apply(prim)
+                mass_api.CreateMassAttr().Set(float(mass))
         if is_art and apply_physx_articulation:
             PhysxSchema.PhysxArticulationAPI.Apply(prim)
         for key, val in props.items():
@@ -843,14 +871,18 @@ def apply_physx_material_properties(env) -> None:
     if not assets_cfg.modify_asset_frictions:
         return
 
+    def material(static_friction: float, dynamic_friction: float | None):
+        dyn = static_friction if dynamic_friction is None else dynamic_friction
+        return torch.tensor(
+            [float(static_friction), float(dyn), 0.0],
+            dtype=torch.float32, device="cpu",
+        )
+
     t0 = time.perf_counter()
-    default = torch.tensor(
-        [float(assets_cfg.robot_friction), float(assets_cfg.robot_friction), 0.0],
-        dtype=torch.float32, device="cpu",
-    )
-    fingertip = torch.tensor(
-        [float(assets_cfg.finger_tip_friction), float(assets_cfg.finger_tip_friction), 0.0],
-        dtype=torch.float32, device="cpu",
+    default = material(assets_cfg.robot_friction, assets_cfg.robot_dynamic_friction)
+    fingertip = material(
+        assets_cfg.finger_tip_friction,
+        assets_cfg.finger_tip_dynamic_friction,
     )
     env_ids = torch.arange(env.num_envs, dtype=torch.int64, device="cpu")
 
@@ -872,13 +904,29 @@ def apply_physx_material_properties(env) -> None:
         )
     robot_view.set_material_properties(robot_materials, env_ids)
 
-    rigid_names = ["table", "object", "goal_viz"]
+    object_material = material(
+        assets_cfg.object_friction,
+        assets_cfg.object_dynamic_friction,
+    )
+    table_material = material(
+        assets_cfg.table_friction,
+        assets_cfg.table_dynamic_friction,
+    )
+    fixture_material = material(
+        assets_cfg.fixture_friction,
+        assets_cfg.fixture_dynamic_friction,
+    )
+    rigid_materials = {
+        "table": table_material,
+        "object": object_material,
+        "goal_viz": default,
+    }
     if getattr(env, "fixture", None) is not None:
-        rigid_names.append("fixture")
-    for name in rigid_names:
+        rigid_materials["fixture"] = fixture_material
+    for name, material in rigid_materials.items():
         view = getattr(env, name).root_physx_view
         materials = view.get_material_properties()
-        materials[:] = default
+        materials[:] = material
         view.set_material_properties(materials, env_ids)
 
     _log_scene_step(t0, "applied PhysX material properties")
@@ -919,6 +967,8 @@ def _make_baked_object_usds(
     source_paths: list[str],
     usd_work_dir: Path,
     bake_root: Path,
+    *,
+    object_mass: float | None = None,
 ) -> tuple[list[str], list[str]]:
     object_raw_usds: list[str] = []
     for source in source_paths:
@@ -945,7 +995,7 @@ def _make_baked_object_usds(
         _bake_usd(usd, bake_root, "object", props=dict(
             kinematic_enabled=False, disable_gravity=False,
             max_depenetration_velocity=1000.0, articulation_enabled=False,
-        ))
+        ), mass=object_mass)
         for usd in object_raw_usds
     ]
     goalviz_usd_paths = [
@@ -975,7 +1025,10 @@ def _resolve_object_pool(env, usd_work_dir: Path, bake_root: Path, setup_t0: flo
         env._object_urdf_paths = source_paths
         _log_scene_step(setup_t0, f"using {len(source_paths)} explicit object asset(s)")
         object_usd_paths, goalviz_usd_paths = _make_baked_object_usds(
-            source_paths, usd_work_dir, bake_root
+            source_paths,
+            usd_work_dir,
+            bake_root,
+            object_mass=assets_cfg.object_mass,
         )
         return object_usd_paths, goalviz_usd_paths, object_scales_normalized
 
@@ -993,7 +1046,10 @@ def _resolve_object_pool(env, usd_work_dir: Path, bake_root: Path, setup_t0: flo
     env._object_urdf_paths = [str(path) for path in urdf_paths]
     _log_scene_step(setup_t0, f"generated {len(urdf_paths)} object URDFs")
     object_usd_paths, goalviz_usd_paths = _make_baked_object_usds(
-        [str(path) for path in urdf_paths], usd_work_dir, bake_root
+        [str(path) for path in urdf_paths],
+        usd_work_dir,
+        bake_root,
+        object_mass=assets_cfg.object_mass,
     )
     return object_usd_paths, goalviz_usd_paths, object_scales_normalized
 
@@ -1049,6 +1105,7 @@ def setup_scene(env) -> None:
             props=dict(
                 kinematic_enabled=True, disable_gravity=True, articulation_enabled=False,
             ),
+            mass=assets_cfg.fixture_mass,
             collision_enabled=bool(assets_cfg.fixture_collision_enabled),
         )
     _log_scene_step(setup_t0, "resolved baked USDs")
@@ -1058,12 +1115,33 @@ def setup_scene(env) -> None:
 
     # 4. Spawn assets.
     env.robot = Articulation(build_robot_articulation_usd_cfg(robot_usd_path))
+    object_rigid_props = _optional_rigid_props(
+        solver_position_iteration_count=assets_cfg.object_solver_position_iteration_count,
+        solver_velocity_iteration_count=assets_cfg.object_solver_velocity_iteration_count,
+    )
+    fixture_rigid_props = _optional_rigid_props(
+        solver_position_iteration_count=assets_cfg.fixture_solver_position_iteration_count,
+        solver_velocity_iteration_count=assets_cfg.fixture_solver_velocity_iteration_count,
+    )
+
     env.table = RigidObject(build_rigid_object_cfg("/World/envs/env_.*/Table", [table_usd_path]))
-    env.object = RigidObject(build_rigid_object_cfg("/World/envs/env_.*/Object", object_usd_paths))
+    env.object = RigidObject(
+        build_rigid_object_cfg(
+            "/World/envs/env_.*/Object",
+            object_usd_paths,
+            rigid_props=object_rigid_props,
+        )
+    )
     env.goal_viz = RigidObject(build_rigid_object_cfg("/World/envs/env_.*/GoalViz", goalviz_usd_paths))
     env.fixture = None
     if fixture_usd_path is not None:
-        env.fixture = RigidObject(build_rigid_object_cfg("/World/envs/env_.*/Fixture", [fixture_usd_path]))
+        env.fixture = RigidObject(
+            build_rigid_object_cfg(
+                "/World/envs/env_.*/Fixture",
+                [fixture_usd_path],
+                rigid_props=fixture_rigid_props,
+            )
+        )
     _log_scene_step(setup_t0, "spawned robot/table/object/goalviz/fixture")
 
     # 5. Ground plane + dome light (global, outside env_*).

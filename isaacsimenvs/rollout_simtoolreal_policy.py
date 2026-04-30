@@ -105,6 +105,15 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=("after_insert", "helical"),
         default="after_insert",
     )
+    parser.add_argument(
+        "--leg_physics_profile",
+        choices=("simtoolreal", "omnireset"),
+        default="simtoolreal",
+        help=(
+            "Keep the default SimToolReal physics profile, or use the "
+            "high-contact OmniReset leg-task PhysX/mass/friction settings."
+        ),
+    )
     parser.add_argument("--leg_spin_turns", type=float, default=1.0)
     parser.add_argument("--leg_spin_steps", type=int, default=8)
     parser.add_argument("--leg_fixture_clearance", type=float, default=0.002)
@@ -332,6 +341,37 @@ def _disable_randomness(cfg) -> None:
     term.force_consecutive_near_goal_steps = True
 
 
+def _apply_omnireset_leg_physics_profile(cfg) -> None:
+    """Use the contact/mass/friction profile from the UWLab OmniReset leg task."""
+    cfg.sim.physx.solver_type = 1
+    cfg.sim.physx.max_position_iteration_count = 192
+    cfg.sim.physx.max_velocity_iteration_count = 1
+    cfg.sim.physx.bounce_threshold_velocity = 0.02
+    cfg.sim.physx.friction_offset_threshold = 0.01
+    cfg.sim.physx.friction_correlation_distance = 0.0005
+    cfg.sim.physx.gpu_found_lost_aggregate_pairs_capacity = 1024 * 1024 * 4
+    cfg.sim.physx.gpu_total_aggregate_pairs_capacity = 2**23
+    cfg.sim.physx.gpu_max_rigid_contact_count = 2**23
+    cfg.sim.physx.gpu_max_rigid_patch_count = 2**23
+    cfg.sim.physx.gpu_collision_stack_size = 2**31
+
+    cfg.assets.object_mass = 0.001
+    cfg.assets.fixture_mass = 0.5
+    cfg.assets.object_solver_position_iteration_count = 4
+    cfg.assets.object_solver_velocity_iteration_count = 0
+    cfg.assets.fixture_solver_position_iteration_count = 4
+    cfg.assets.fixture_solver_velocity_iteration_count = 0
+
+    # Use representative values from the OmniReset startup randomization ranges:
+    # insertive object (1.0-2.0), receptive object (0.2-0.6), table (0.3-0.6).
+    cfg.assets.object_friction = 1.5
+    cfg.assets.object_dynamic_friction = 1.4
+    cfg.assets.fixture_friction = 0.4
+    cfg.assets.fixture_dynamic_friction = 0.325
+    cfg.assets.table_friction = 0.45
+    cfg.assets.table_dynamic_friction = 0.35
+
+
 def _make_cfg(args):
     from isaacsimenvs.tasks.simtoolreal.simtoolreal_env_cfg import SimToolRealEnvCfg
 
@@ -361,6 +401,8 @@ def _make_cfg(args):
     cfg.assets.object_policy_frame_quat_wxyz = tuple(
         float(x) for x in xyzw_to_wxyz(_quat_matrix_xyzw(R_USD_POLICY_LEG))
     )
+    if args.leg_physics_profile == "omnireset":
+        _apply_omnireset_leg_physics_profile(cfg)
 
     start_pose_asset = _policy_to_leg_asset_pose_xyzw(start_pose_policy)
     first_goal_asset = _policy_to_leg_asset_pose_xyzw(goals_policy[0])
@@ -484,7 +526,8 @@ def main() -> int:
     near_goal_steps = 0
     print(
         f"[rollout] scenario={args.scenario} max_steps={args.max_steps} "
-        f"goals={len(goals)} checkpoint={args.checkpoint}",
+        f"goals={len(goals)} checkpoint={args.checkpoint} "
+        f"leg_physics_profile={getattr(args, 'leg_physics_profile', 'n/a')}",
         flush=True,
     )
 
