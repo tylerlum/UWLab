@@ -100,6 +100,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--leg_preinsert_height", type=float, default=0.070)
     parser.add_argument("--leg_insert_height", type=float, default=0.038)
     parser.add_argument("--leg_descend_steps", type=int, default=4)
+    parser.add_argument(
+        "--leg_spin_mode",
+        choices=("after_insert", "helical"),
+        default="after_insert",
+    )
     parser.add_argument("--leg_spin_turns", type=float, default=1.0)
     parser.add_argument("--leg_spin_steps", type=int, default=8)
     parser.add_argument("--leg_fixture_clearance", type=float, default=0.002)
@@ -230,6 +235,23 @@ def _make_furniturebench_leg_trajectory(args) -> tuple[np.ndarray, list[np.ndarr
         np.array([hole[0], hole[1], hole[2] + args.leg_hover_height, *base_quat], dtype=np.float32),
         np.array([hole[0], hole[1], hole[2] + args.leg_preinsert_height, *base_quat], dtype=np.float32),
     ]
+
+    has_spin = int(args.leg_spin_steps) > 0 and abs(float(args.leg_spin_turns)) > 1.0e-8
+    if has_spin and args.leg_spin_mode == "helical":
+        total_spin = -2.0 * np.pi * float(args.leg_spin_turns)
+        spin_steps = int(args.leg_spin_steps)
+        heights = np.linspace(
+            float(args.leg_preinsert_height),
+            float(args.leg_insert_height),
+            spin_steps + 1,
+            dtype=np.float32,
+        )[1:]
+        thetas = np.linspace(total_spin / spin_steps, total_spin, spin_steps)
+        for height, theta in zip(heights, thetas, strict=True):
+            spin_quat = _quat_multiply_xyzw(base_quat, R.from_euler("x", theta).as_quat())
+            goals.append(np.array([hole[0], hole[1], hole[2] + height, *spin_quat], dtype=np.float32))
+        return start_pose, goals, fixture_root
+
     descend_steps = max(1, int(args.leg_descend_steps))
     descend_heights = np.linspace(
         float(args.leg_preinsert_height),
@@ -240,7 +262,7 @@ def _make_furniturebench_leg_trajectory(args) -> tuple[np.ndarray, list[np.ndarr
     for height in descend_heights:
         goals.append(np.array([hole[0], hole[1], hole[2] + height, *base_quat], dtype=np.float32))
 
-    if int(args.leg_spin_steps) > 0 and abs(float(args.leg_spin_turns)) > 1.0e-8:
+    if has_spin:
         total_spin = -2.0 * np.pi * float(args.leg_spin_turns)
         for theta in np.linspace(total_spin / args.leg_spin_steps, total_spin, args.leg_spin_steps):
             spin_quat = _quat_multiply_xyzw(base_quat, R.from_euler("x", theta).as_quat())
