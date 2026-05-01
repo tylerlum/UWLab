@@ -1,0 +1,477 @@
+"""Interactive Viser viewer for FurnitureBench square-leg alignment.
+
+This script intentionally does not import Isaac Sim. It loads the cached
+FurnitureBench USDs directly, shows the raw USD root frames, and overlays the
+virtual SimToolReal policy frame used by ``isaacsimenvs/rollout_simtoolreal_policy.py``.
+"""
+
+from __future__ import annotations
+
+import argparse
+import time
+from dataclasses import dataclass
+from pathlib import Path
+
+import numpy as np
+import trimesh
+import viser
+from pxr import Gf, Usd, UsdGeom
+from scipy.spatial.transform import Rotation as Rotation
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_ASSET_ROOTS = (
+    REPO_ROOT / "assets" / "usd" / "furniturebench",
+    REPO_ROOT
+    / ".pretrained_checkpoints"
+    / "SimToolReal"
+    / "omnireset_assets"
+    / "FurnitureBench",
+)
+
+# FurnitureBench metadata used by OmniReset for the fbleg/fbtabletop pair.
+TABLE_ASSEMBLED_POS = np.array([0.05625, 0.05625, -0.009435], dtype=np.float64)
+TABLE_ASSEMBLED_WXYZ = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+LEG_ASSEMBLED_POS = np.array([0.0, 0.0, -0.056658], dtype=np.float64)
+LEG_ASSEMBLED_WXYZ = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+
+# Columns are policy-frame axes expressed in the SquareLeg USD root frame:
+# policy +x = USD -z = cuboidal handle -> screw threads.
+R_USD_POLICY_LEG = np.array(
+    [
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, -1.0],
+        [-1.0, 0.0, 0.0],
+    ],
+    dtype=np.float64,
+)
+Q_ASSET_POLICY_WXYZ = np.roll(Rotation.from_matrix(R_USD_POLICY_LEG).as_quat(), 1)
+
+
+@dataclass(frozen=True)
+class MeshPart:
+    path: str
+    role: str
+    approximation: str | None
+    vertices: np.ndarray
+    faces: np.ndarray
+
+    @property
+    def bounds(self) -> tuple[np.ndarray, np.ndarray]:
+        return self.vertices.min(axis=0), self.vertices.max(axis=0)
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--asset_root", type=Path, default=None)
+    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--port", type=int, default=8082)
+    parser.add_argument("--show_collisions", action="store_true")
+    parser.add_argument("--hide_goal_ghost", action="store_true")
+    parser.add_argument(
+        "--dry_run",
+        action="store_true",
+        help="Load the USDs and print mesh/frame information without starting Viser.",
+    )
+    return parser
+
+
+def _find_asset_root(explicit_root: Path | None) -> Path:
+    candidates = (explicit_root,) if explicit_root is not None else DEFAULT_ASSET_ROOTS
+    for root in candidates:
+        if root is None:
+            continue
+        if (
+            (root / "SquareLeg" / "square_leg.usd").exists()
+            and (root / "SquareTableTop" / "square_table_top.usd").exists()
+        ):
+            return root
+    searched = "\n".join(f"  - {root}" for root in candidates if root is not None)
+    raise FileNotFoundError(f"Could not find SquareLeg/SquareTableTop USDs. Searched:\n{searched}")
+
+
+def _triangulate(face_counts: np.ndarray, face_indices: np.ndarray) -> np.ndarray:
+    faces: list[list[int]] = []
+    cursor = 0
+    for count in face_counts:
+        polygon = face_indices[cursor : cursor + int(count)]
+        cursor += int(count)
+        if len(polygon) < 3:
+            continue
+        for i in range(1, len(polygon) - 1):
+            faces.append([int(polygon[0]), int(polygon[i]), int(polygon[i + 1])])
+    return np.asarray(faces, dtype=np.uint32)
+
+
+def _points_to_root_frame(
+    points: np.ndarray,
+    prim: Usd.Prim,
+    root_prim: Usd.Prim,
+    xform_cache: UsdGeom.XformCache,
+) -> np.ndarray:
+    prim_to_world = xform_cache.GetLocalToWorldTransform(prim)
+    root_to_world = xform_cache.GetLocalToWorldTransform(root_prim)
+    world_to_root = root_to_world.GetInverse()
+
+    out = np.empty_like(points, dtype=np.float64)
+    for i, point in enumerate(points):
+        point_world = prim_to_world.Transform(Gf.Vec3d(float(point[0]), float(point[1]), float(point[2])))
+        point_root = world_to_root.Transform(point_world)
+        out[i] = (point_root[0], point_root[1], point_root[2])
+    return out
+
+
+def _load_usd_meshes(usd_path: Path) -> tuple[str, list[MeshPart]]:
+    stage = Usd.Stage.Open(str(usd_path))
+    if stage is None:
+        raise RuntimeError(f"Failed to open USD: {usd_path}")
+
+    root_prim = stage.GetDefaultPrim()
+    if not root_prim or not root_prim.IsValid():
+        children = [child for child in stage.GetPseudoRoot().GetChildren() if child.IsValid()]
+        if not children:
+            raise RuntimeError(f"USD has no root prims: {usd_path}")
+        root_prim = children[0]
+
+    xform_cache = UsdGeom.XformCache()
+    parts: list[MeshPart] = []
+    for prim in stage.Traverse():
+        if not prim.IsA(UsdGeom.Mesh):
+            continue
+
+        mesh = UsdGeom.Mesh(prim)
+        points = mesh.GetPointsAttr().Get()
+        face_counts = mesh.GetFaceVertexCountsAttr().Get()
+        face_indices = mesh.GetFaceVertexIndicesAttr().Get()
+        if points is None or face_counts is None or face_indices is None:
+            continue
+
+        vertices = _points_to_root_frame(np.asarray(points, dtype=np.float64), prim, root_prim, xform_cache)
+        faces = _triangulate(np.asarray(face_counts, dtype=np.int64), np.asarray(face_indices, dtype=np.int64))
+        if len(vertices) == 0 or len(faces) == 0:
+            continue
+
+        prim_path = str(prim.GetPath())
+        role = "collision" if "/collisions/" in prim_path else "visual"
+        approximation_attr = prim.GetAttribute("physics:approximation")
+        approximation = approximation_attr.Get() if approximation_attr and approximation_attr.IsValid() else None
+        parts.append(MeshPart(prim_path, role, approximation, vertices, faces))
+
+    return str(root_prim.GetPath()), parts
+
+
+def _mesh_color(part: MeshPart, object_name: str, ghost: bool = False) -> tuple[int, int, int]:
+    if ghost:
+        return (80, 210, 120)
+    if part.role == "collision":
+        return (80, 160, 240) if object_name == "table" else (230, 80, 190)
+    if object_name == "leg":
+        return (195, 95, 45) if "bolt" in part.path.lower() else (235, 155, 80)
+    if "hole" in part.path.lower():
+        return (95, 125, 150)
+    return (150, 154, 160)
+
+
+def _add_parts(
+    server: viser.ViserServer,
+    parent: str,
+    parts: list[MeshPart],
+    object_name: str,
+    show_collisions: bool,
+    ghost: bool = False,
+) -> list[viser.MeshHandle]:
+    handles: list[viser.MeshHandle] = []
+    for part in parts:
+        safe_path = part.path.strip("/")
+        visible = show_collisions if part.role == "collision" else True
+        opacity = 0.24 if part.role == "collision" else None
+        if ghost:
+            opacity = 0.20
+        handle = server.scene.add_mesh_simple(
+            f"{parent}/meshes/{safe_path}",
+            vertices=part.vertices.astype(np.float32),
+            faces=part.faces.astype(np.uint32),
+            color=_mesh_color(part, object_name, ghost=ghost),
+            opacity=opacity,
+            side="double",
+            flat_shading=False,
+            visible=visible,
+        )
+        handles.append(handle)
+    return handles
+
+
+def _wxyz_to_rot(wxyz: np.ndarray | tuple[float, float, float, float]) -> Rotation:
+    q = np.asarray(wxyz, dtype=np.float64)
+    return Rotation.from_quat(np.roll(q, -1))
+
+
+def _rot_to_wxyz(rot: Rotation) -> np.ndarray:
+    return np.roll(rot.as_quat(), 1)
+
+
+def _normalize_wxyz(wxyz: np.ndarray | tuple[float, float, float, float]) -> np.ndarray:
+    q = np.asarray(wxyz, dtype=np.float64)
+    return q / np.linalg.norm(q)
+
+
+def _compose(
+    pos_a: np.ndarray,
+    wxyz_a: np.ndarray,
+    pos_b: np.ndarray,
+    wxyz_b: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    rot_a = _wxyz_to_rot(wxyz_a)
+    rot_b = _wxyz_to_rot(wxyz_b)
+    return pos_a + rot_a.apply(pos_b), _rot_to_wxyz(rot_a * rot_b)
+
+
+def _leg_root_from_assembled(
+    assembled_pos: np.ndarray,
+    leg_root_wxyz: np.ndarray,
+) -> np.ndarray:
+    return assembled_pos - _wxyz_to_rot(leg_root_wxyz).apply(LEG_ASSEMBLED_POS)
+
+
+def _goal_leg_pose(yaw_rad: float = 0.0, tip_z_offset: float = 0.0) -> tuple[np.ndarray, np.ndarray]:
+    leg_wxyz = _rot_to_wxyz(Rotation.from_euler("z", yaw_rad))
+    target_tip_pos = TABLE_ASSEMBLED_POS + np.array([0.0, 0.0, tip_z_offset], dtype=np.float64)
+    return _leg_root_from_assembled(target_tip_pos, leg_wxyz), leg_wxyz
+
+
+def _fmt_vec(vec: np.ndarray) -> str:
+    return "[" + ", ".join(f"{x:+.5f}" for x in vec) + "]"
+
+
+def _print_summary(table_root: str, table_parts: list[MeshPart], leg_root: str, leg_parts: list[MeshPart]) -> None:
+    print(f"Table USD root: {table_root}")
+    print(f"Leg USD root:   {leg_root}")
+    for name, parts in (("table", table_parts), ("leg", leg_parts)):
+        print(f"\n{name} mesh prims: {len(parts)}")
+        for part in parts:
+            lo, hi = part.bounds
+            approx = f", approximation={part.approximation}" if part.approximation else ""
+            print(
+                f"  {part.path}: role={part.role}{approx}, "
+                f"verts={len(part.vertices)}, faces={len(part.faces)}, "
+                f"bounds={_fmt_vec(lo)} -> {_fmt_vec(hi)}"
+            )
+    print("\nFrames:")
+    print(f"  table root: identity at USD {table_root}")
+    print(f"  table assembled/hole frame: pos={_fmt_vec(TABLE_ASSEMBLED_POS)}, wxyz={_fmt_vec(TABLE_ASSEMBLED_WXYZ)}")
+    print(f"  leg root: identity at USD {leg_root}")
+    print(f"  leg assembled/thread-tip frame: pos={_fmt_vec(LEG_ASSEMBLED_POS)}, wxyz={_fmt_vec(LEG_ASSEMBLED_WXYZ)}")
+    print(f"  leg policy frame relative to leg root: pos=[+0.00000, +0.00000, +0.00000], wxyz={_fmt_vec(Q_ASSET_POLICY_WXYZ)}")
+    print("  policy +x = USD -z = handle -> screw threads")
+
+
+def main() -> None:
+    args = _build_parser().parse_args()
+    asset_root = _find_asset_root(args.asset_root)
+    table_usd = asset_root / "SquareTableTop" / "square_table_top.usd"
+    leg_usd = asset_root / "SquareLeg" / "square_leg.usd"
+
+    table_root, table_parts = _load_usd_meshes(table_usd)
+    leg_root, leg_parts = _load_usd_meshes(leg_usd)
+    if args.dry_run:
+        _print_summary(table_root, table_parts, leg_root, leg_parts)
+        return
+
+    init_leg_pos, init_leg_wxyz = _goal_leg_pose()
+
+    server = viser.ViserServer(host=args.host, port=args.port)
+    server.scene.set_up_direction("+z")
+    server.scene.add_grid(
+        "/grid",
+        width=0.24,
+        height=0.24,
+        plane="xy",
+        cell_size=0.01,
+        section_size=0.05,
+        position=(0.0, 0.0, TABLE_ASSEMBLED_POS[2]),
+    )
+
+    server.scene.add_frame("/world", axes_length=0.04, axes_radius=0.0015)
+    server.scene.add_frame("/table", axes_length=0.045, axes_radius=0.0015)
+    server.scene.add_frame(
+        "/table/assembled_hole",
+        position=TABLE_ASSEMBLED_POS,
+        wxyz=TABLE_ASSEMBLED_WXYZ,
+        axes_length=0.035,
+        axes_radius=0.0012,
+    )
+    server.scene.add_label(
+        "/table/assembled_hole/label",
+        "table assembled / hole",
+        position=(0.004, 0.004, 0.010),
+        font_size_mode="scene",
+        font_scene_height=0.006,
+    )
+
+    goal_frame = server.scene.add_frame(
+        "/goal_leg",
+        position=init_leg_pos,
+        wxyz=init_leg_wxyz,
+        axes_length=0.038,
+        axes_radius=0.0012,
+        visible=not args.hide_goal_ghost,
+    )
+    goal_label = server.scene.add_label(
+        "/goal_leg/label",
+        "assembled leg root",
+        position=(0.005, -0.012, 0.006),
+        font_size_mode="scene",
+        font_scene_height=0.006,
+        visible=not args.hide_goal_ghost,
+    )
+
+    leg_frame = server.scene.add_frame(
+        "/leg",
+        position=init_leg_pos,
+        wxyz=init_leg_wxyz,
+        axes_length=0.045,
+        axes_radius=0.0015,
+    )
+    server.scene.add_frame(
+        "/leg/policy_frame",
+        position=(0.0, 0.0, 0.0),
+        wxyz=Q_ASSET_POLICY_WXYZ,
+        axes_length=0.055,
+        axes_radius=0.0014,
+    )
+    server.scene.add_label(
+        "/leg/policy_frame/label",
+        "policy frame: +x toward threads",
+        position=(0.004, 0.004, 0.004),
+        font_size_mode="scene",
+        font_scene_height=0.0055,
+    )
+    server.scene.add_frame(
+        "/leg/assembled_tip",
+        position=LEG_ASSEMBLED_POS,
+        wxyz=LEG_ASSEMBLED_WXYZ,
+        axes_length=0.035,
+        axes_radius=0.0012,
+    )
+    server.scene.add_label(
+        "/leg/assembled_tip/label",
+        "leg assembled / thread tip",
+        position=(0.004, 0.004, -0.006),
+        font_size_mode="scene",
+        font_scene_height=0.0055,
+    )
+
+    table_handles = _add_parts(server, "/table", table_parts, "table", args.show_collisions)
+    leg_handles = _add_parts(server, "/leg", leg_parts, "leg", args.show_collisions)
+    goal_handles = _add_parts(server, "/goal_leg", leg_parts, "leg", False, ghost=True)
+    for handle in goal_handles:
+        handle.visible = not args.hide_goal_ghost
+
+    controls = server.scene.add_transform_controls(
+        "/leg_controls",
+        position=init_leg_pos,
+        wxyz=init_leg_wxyz,
+        scale=0.08,
+        line_width=3.0,
+    )
+
+    server.gui.add_markdown(
+        "# FurnitureBench Leg Alignment\n"
+        "Drag the transform controls to move the raw SquareLeg USD root. "
+        "The red axis on `/leg/policy_frame` is SimToolReal policy `+x`, "
+        "which points from handle to screw threads."
+    )
+    show_collision_box = server.gui.add_checkbox("Show collision meshes", args.show_collisions)
+    show_goal_box = server.gui.add_checkbox("Show assembled ghost", not args.hide_goal_ghost)
+    yaw_slider = server.gui.add_slider("Goal yaw about table +Z (deg)", -180.0, 180.0, 1.0, 0.0)
+    tip_z_slider = server.gui.add_slider("Tip Z offset from hole (m)", -0.030, 0.080, 0.001, 0.0)
+    set_assembled_button = server.gui.add_button("Set assembled pose")
+    set_hover_button = server.gui.add_button("Set hover pose")
+    apply_slider_button = server.gui.add_button("Apply yaw/Z sliders")
+    snap_tip_button = server.gui.add_button("Snap current tip to hole")
+    status = server.gui.add_markdown("")
+
+    def sync_status() -> None:
+        leg_pos = np.asarray(controls.position, dtype=np.float64)
+        leg_wxyz = _normalize_wxyz(controls.wxyz)
+        leg_tip_pos, leg_tip_wxyz = _compose(leg_pos, leg_wxyz, LEG_ASSEMBLED_POS, LEG_ASSEMBLED_WXYZ)
+        table_tip_pos = TABLE_ASSEMBLED_POS
+        rel_xyz = leg_tip_pos - table_tip_pos
+        rel_rot = _wxyz_to_rot(TABLE_ASSEMBLED_WXYZ).inv() * _wxyz_to_rot(leg_tip_wxyz)
+        rel_rpy = rel_rot.as_euler("xyz", degrees=True)
+        status.content = (
+            "## Current Pose\n"
+            f"- leg root pos: `{_fmt_vec(leg_pos)}`\n"
+            f"- leg root wxyz: `{_fmt_vec(leg_wxyz)}`\n"
+            f"- tip minus hole xyz: `{_fmt_vec(rel_xyz)}` m\n"
+            f"- tip position error: `{np.linalg.norm(rel_xyz):.5f}` m\n"
+            f"- tip roll/pitch/yaw vs hole: `{_fmt_vec(rel_rpy)}` deg\n\n"
+            "OmniReset success uses the assembled/tip frame position plus roll/pitch; "
+            "yaw is intentionally free."
+        )
+
+    def set_leg_pose(pos: np.ndarray, wxyz: np.ndarray) -> None:
+        q = _normalize_wxyz(wxyz)
+        controls.position = tuple(float(x) for x in pos)
+        controls.wxyz = tuple(float(x) for x in q)
+        leg_frame.position = controls.position
+        leg_frame.wxyz = controls.wxyz
+        sync_status()
+
+    @controls.on_update
+    def _(_) -> None:
+        leg_frame.position = controls.position
+        leg_frame.wxyz = tuple(float(x) for x in _normalize_wxyz(controls.wxyz))
+        sync_status()
+
+    @show_collision_box.on_update
+    def _(_) -> None:
+        for handle in table_handles + leg_handles:
+            if "/collisions/" in handle.name:
+                handle.visible = bool(show_collision_box.value)
+
+    @show_goal_box.on_update
+    def _(_) -> None:
+        goal_frame.visible = bool(show_goal_box.value)
+        goal_label.visible = bool(show_goal_box.value)
+        for handle in goal_handles:
+            handle.visible = bool(show_goal_box.value)
+
+    @set_assembled_button.on_click
+    def _(_) -> None:
+        pos, wxyz = _goal_leg_pose()
+        yaw_slider.value = 0.0
+        tip_z_slider.value = 0.0
+        set_leg_pose(pos, wxyz)
+
+    @set_hover_button.on_click
+    def _(_) -> None:
+        pos, wxyz = _goal_leg_pose(tip_z_offset=0.050)
+        yaw_slider.value = 0.0
+        tip_z_slider.value = 0.050
+        set_leg_pose(pos, wxyz)
+
+    @apply_slider_button.on_click
+    def _(_) -> None:
+        pos, wxyz = _goal_leg_pose(np.deg2rad(float(yaw_slider.value)), float(tip_z_slider.value))
+        set_leg_pose(pos, wxyz)
+
+    @snap_tip_button.on_click
+    def _(_) -> None:
+        current_wxyz = _normalize_wxyz(controls.wxyz)
+        root_pos = _leg_root_from_assembled(TABLE_ASSEMBLED_POS, current_wxyz)
+        set_leg_pose(root_pos, current_wxyz)
+
+    sync_status()
+    print(f"Serving FurnitureBench alignment viewer at http://{args.host}:{args.port}")
+    print(f"Asset root: {asset_root}")
+    print("Open the URL in a browser and drag /leg_controls.")
+    try:
+        while True:
+            time.sleep(0.25)
+    except KeyboardInterrupt:
+        server.stop()
+
+
+if __name__ == "__main__":
+    main()

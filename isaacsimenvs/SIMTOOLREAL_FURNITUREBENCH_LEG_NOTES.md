@@ -199,6 +199,47 @@ q_world_asset = q_world_policy * inverse(q_asset_policy)
 
 This is implemented by `_policy_to_leg_asset_pose_xyzw()`.
 
+### Interactive alignment viewer
+
+Use this standalone Viser tool to inspect the raw FurnitureBench asset frames and thread alignment without starting Isaac Sim:
+
+```bash
+.venv-viser/bin/python scripts/tools/view_furniturebench_leg_alignment.py --port 8082
+```
+
+The Viser environment is intentionally separate from `env_uwlab` so it does not disturb Isaac Sim package pins. If it needs to be recreated, install `viser`, `trimesh`, `scipy`, `numpy`, and `usd-core` into a local viewer venv.
+
+The viewer shows:
+
+- `/table`: raw `SquareTableTop` USD root frame.
+- `/table/assembled_hole`: OmniReset assembled/hole frame from tabletop metadata.
+- `/leg`: draggable raw `SquareLeg` USD root frame.
+- `/leg/policy_frame`: virtual SimToolReal policy frame, with red `+x` pointing handle-to-threads.
+- `/leg/assembled_tip`: OmniReset assembled/thread-tip frame from leg metadata.
+- `/goal_leg`: translucent assembled-pose ghost.
+
+This viewer also answers a common frame question: the SquareLeg mesh is not rewritten to make USD `+x` point along the long axis. The physical USD remains in its original frame. The handle-to-thread long-axis convention is applied as a virtual policy-frame transform in observations and when converting scripted policy goals back to the USD asset frame.
+
+### FurnitureBench mesh structure
+
+The FurnitureBench leg/tabletop pair is not a single monolithic mesh, and it is not loaded through URDF in this rollout. Each part is one USD file with multiple mesh prims:
+
+- `SquareLeg/square_leg.usd`, root prim `/square_leg`, currently 4 mesh prims:
+  - `/square_leg/visuals/bolt`
+  - `/square_leg/visuals/leg`
+  - `/square_leg/collisions/leg`
+  - `/square_leg/collisions/bolt`
+- `SquareTableTop/square_table_top.usd`, root prim `/square_table`, currently 18 mesh prims:
+  - visual tabletop/walls/hole meshes
+  - matching collision tabletop/walls/hole meshes
+
+The important authored collision approximations are still on the source USDs:
+
+- leg handle collision: convex hull
+- leg threaded bolt collision: SDF
+- tabletop hole collisions: SDF
+- tabletop and wall collisions: convex hull
+
 ## Goal Placement
 
 The rollout currently uses the first FurnitureBench tabletop hole by default:
