@@ -225,7 +225,7 @@ with current values:
 - `fixture_local_bottom = -0.01558619`
 - default clearance = `0.002`
 
-The policy-frame goal orientation points the leg long axis down, so the threaded end points toward the hole. Clockwise screwing is represented as negative rotation about local policy `+x`.
+The policy-frame goal orientation points the leg long axis down, so the threaded end points toward the hole. Because policy `+x` points down into the hole, positive rotation about local policy `+x` appears clockwise when viewed from above looking down the hole. Positive `--leg_spin_turns` therefore means spin into the hole.
 
 The scripted leg trajectory has two useful modes:
 
@@ -366,7 +366,7 @@ require 3-5 consecutive policy steps for robust evaluation
 Then add separate diagnostics or shaping for thread sanity:
 
 - Track downward progress after the leg is radially near the hole.
-- Track clockwise yaw progress about local policy `+x`.
+- Track positive yaw progress about local policy `+x`, which is clockwise when viewed from above/down the hole.
 - Penalize depth progress without enough yaw progress if we specifically want to discourage thread penetration shortcuts.
 - Log straight-down penetration failures separately from normal policy failures. A rollout that reaches the final z without spinning is a physics/contact problem even if the OmniReset-style success metric says it is aligned.
 

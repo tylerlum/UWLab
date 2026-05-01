@@ -149,7 +149,12 @@ def _build_parser() -> argparse.ArgumentParser:
             "high-contact OmniReset leg-task PhysX/mass/friction settings."
         ),
     )
-    parser.add_argument("--leg_spin_turns", type=float, default=1.0)
+    parser.add_argument(
+        "--leg_spin_turns",
+        type=float,
+        default=1.0,
+        help="Positive turns spin clockwise when looking down the hole, i.e. about local policy +x.",
+    )
     parser.add_argument("--leg_spin_steps", type=int, default=8)
     parser.add_argument("--leg_fixture_clearance", type=float, default=0.002)
     return parser
@@ -303,7 +308,9 @@ def _make_furniturebench_leg_trajectory(args) -> tuple[np.ndarray, list[np.ndarr
 
     has_spin = int(args.leg_spin_steps) > 0 and abs(float(args.leg_spin_turns)) > 1.0e-8
     if has_spin and args.leg_spin_mode == "helical":
-        total_spin = -2.0 * np.pi * float(args.leg_spin_turns)
+        # Policy +x points down into the hole. By the right-hand rule, positive
+        # local +x rotation appears clockwise when viewed from above.
+        total_spin = 2.0 * np.pi * float(args.leg_spin_turns)
         spin_steps = int(args.leg_spin_steps)
         heights = np.linspace(
             float(args.leg_preinsert_height),
@@ -328,7 +335,9 @@ def _make_furniturebench_leg_trajectory(args) -> tuple[np.ndarray, list[np.ndarr
         goals.append(np.array([hole[0], hole[1], hole[2] + height, *base_quat], dtype=np.float32))
 
     if has_spin:
-        total_spin = -2.0 * np.pi * float(args.leg_spin_turns)
+        # Policy +x points down into the hole. Positive turns spin into a
+        # right-handed thread when viewed from above/down the hole.
+        total_spin = 2.0 * np.pi * float(args.leg_spin_turns)
         for theta in np.linspace(total_spin / args.leg_spin_steps, total_spin, args.leg_spin_steps):
             spin_quat = _quat_multiply_xyzw(base_quat, R.from_euler("x", theta).as_quat())
             goals.append(
