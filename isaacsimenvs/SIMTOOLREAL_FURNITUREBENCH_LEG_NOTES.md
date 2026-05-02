@@ -427,6 +427,111 @@ Local inspection of the current SquareTableTop USD shows:
 
 This is the important SDF piece: the threaded bolt and tabletop holes are SDF mesh collisions. The SimToolReal rollout does not regenerate those meshes. It copies/bakes the USD and authors additional rigid-body/contact attributes while preserving the source collision approximations.
 
+### Authoring mixed-collider USDs
+
+A single rigid object can have multiple child collision mesh prims with different collision approximations. This is how the working FurnitureBench USDs are structured:
+
+```text
+/square_leg
+  /visuals/leg             visible, no collision
+  /visuals/bolt            visible, no collision
+  /collisions/leg          invisible, collisionEnabled, approximation = convexHull
+  /collisions/bolt         invisible, collisionEnabled, approximation = sdf
+
+/square_table
+  /visuals/table_top       visible, no collision
+  /visuals/wall*           visible, no collision
+  /visuals/hole*           visible, no collision
+  /collisions/table_top    invisible, collisionEnabled, approximation = convexHull
+  /collisions/wall*        invisible, collisionEnabled, approximation = convexHull
+  /collisions/hole*        invisible, collisionEnabled, approximation = sdf
+```
+
+The root prim carries the rigid body, mass, kinematic, and gravity properties. The child collision mesh prims carry the per-part collider approximation. PhysX treats these children as a compound collider for the one root rigid body.
+
+This is different from a simple URDF conversion. A URDF like:
+
+```xml
+<collision>
+  <geometry>
+    <mesh filename="../mesh/square_table/square_table_top.obj"/>
+  </geometry>
+  <sdf resolution="512"/>
+</collision>
+```
+
+describes one collision mesh for the link. It does not identify which triangles are the hole/thread geometry and which triangles are the tabletop/body geometry. It is too coarse for "hole SDF, rest convex hull" unless the converter or a postprocess step can split the mesh into semantic child prims.
+
+The practical rule is:
+
+- Use Blender, CAD, or a trusted mesh-processing step to split the asset into meaningful submeshes: `hole*`, `thread*`, `bolt*`, `table_top`, `wall*`, `leg`, `handle`, etc.
+- Use SDF only on the detailed threaded or receiving-hole surfaces where non-convex contact matters.
+- Use convex hulls for simple cuboids, walls, handles, and support geometry.
+- Keep visual meshes separate from collision meshes; visual prims should not have collision APIs.
+- Do not rely on SAM or 2D segmentation for this. The needed output is named, watertight 3D collision submeshes, not image masks.
+
+Isaac Sim supports the final mixed setup, but it does not automatically know which faces should become SDF and which should become convex hull. That semantic split has to come from the mesh authoring process or from a custom script.
+
+### Recommended conversion workflow
+
+For a new object pair, prefer a repeatable CLI/postprocess workflow after one-time mesh cleanup:
+
+1. Prepare the mesh in Blender/CAD.
+   - Bake real-world scale and orientation into vertices.
+   - Set the object origin intentionally.
+   - Split semantic collision pieces into named mesh objects.
+   - For the leg, split handle/body from threaded bolt.
+   - For the tabletop, split simple plate/walls from the receiving holes.
+2. Export as USD, USDZ, OBJ, or another format Isaac Sim can import while preserving object names.
+3. Run a custom USD builder/postprocessor that:
+   - creates a clean root prim, e.g. `/square_table`;
+   - copies imported meshes into `/visuals`;
+   - copies the same or simplified meshes into `/collisions`;
+   - makes collision prims invisible;
+   - applies `physics:approximation = sdf` to names matching `hole*`, `thread*`, or `bolt*`;
+   - applies `physics:approximation = convexHull` to names matching `table_top`, `wall*`, `leg`, `handle*`, etc.;
+   - applies rigid-body/mass/kinematic/gravity properties to the root prim.
+
+The existing `scripts/tools/convert_mesh.py` is useful but not sufficient by itself for this mixed case. It accepts `--collision-approximation sdf` and `--collision-approximation convexHull`, but that applies one collision approximation to the converted asset. Mixed SDF/convex assets need per-child mesh prim authoring.
+
+The workflow can still be CLI-based. The missing piece is a script shaped roughly like:
+
+```bash
+python scripts/tools/build_mixed_collider_usd.py \
+  --input /path/to/square_table_top.usd \
+  --output /path/to/SquareTableTop/square_table_top.usd \
+  --root square_table \
+  --sdf-regex "hole.*|thread.*|bolt.*" \
+  --convex-regex "table_top|wall.*|leg|handle.*" \
+  --kinematic
+```
+
+This script should fail loudly if a mesh name matches neither rule or if all SDF/convex groups are empty. Silent fallbacks are dangerous for threaded insertion tasks because a visually correct asset can have physically wrong collisions.
+
+### Mixed-collider validation checklist
+
+Use static USD inspection before running physics:
+
+- Root prim has the expected rigid body API.
+- Dynamic insertive object root has mass and gravity enabled.
+- Receptive fixture root is kinematic and gravity disabled.
+- Visual mesh prims have no `PhysicsCollisionAPI`.
+- Collision mesh prims are invisible and have `physics:collisionEnabled = True`.
+- Threaded bolt and receiving-hole collision prims have `physics:approximation = sdf`.
+- Handle, wall, plate, and other simple collision prims have `physics:approximation = convexHull`.
+- Collision mesh bounds roughly match the visual geometry and are not scaled or rotated unexpectedly.
+
+Then use visual and physics checks:
+
+- Visualize the USD with color-coded collision overlays: SDF parts in one color, convex parts in another, visual meshes semi-transparent or separate.
+- Load the asset in Isaac Sim headless and step the world to confirm PhysX can cook the SDF colliders without errors.
+- Spawn the receptive object kinematic and the insertive object dynamic.
+- Negative test: push straight down without spin. The threaded object should not teleport through the hole.
+- Positive test: push while spinning in the correct direction. The threads should advance without explosions or severe penetration.
+- Record video and trajectory logs for regressions.
+
+These validation steps are more important than the exact authoring tool. Blender/Isaac Sim GUI is fine for initial debugging, but any asset we depend on for training should be reproducible by a script and validated by static USD inspection plus a small physics smoke test.
+
 The bake step sets:
 
 - collision contact offset = `0.002`
