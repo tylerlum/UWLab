@@ -300,13 +300,6 @@ def main() -> None:
         axes_length=0.035,
         axes_radius=0.0012,
     )
-    server.scene.add_label(
-        "/table/assembled_hole/label",
-        "table assembled / hole",
-        position=(0.004, 0.004, 0.010),
-        font_size_mode="scene",
-        font_scene_height=0.006,
-    )
 
     goal_frame = server.scene.add_frame(
         "/goal_leg",
@@ -314,14 +307,6 @@ def main() -> None:
         wxyz=init_leg_wxyz,
         axes_length=0.038,
         axes_radius=0.0012,
-        visible=not args.hide_goal_ghost,
-    )
-    goal_label = server.scene.add_label(
-        "/goal_leg/label",
-        "assembled leg root",
-        position=(0.005, -0.012, 0.006),
-        font_size_mode="scene",
-        font_scene_height=0.006,
         visible=not args.hide_goal_ghost,
     )
 
@@ -339,26 +324,12 @@ def main() -> None:
         axes_length=0.055,
         axes_radius=0.0014,
     )
-    server.scene.add_label(
-        "/leg/policy_frame/label",
-        "policy frame: +x toward threads",
-        position=(0.004, 0.004, 0.004),
-        font_size_mode="scene",
-        font_scene_height=0.0055,
-    )
     server.scene.add_frame(
         "/leg/assembled_tip",
         position=LEG_ASSEMBLED_POS,
         wxyz=LEG_ASSEMBLED_WXYZ,
         axes_length=0.035,
         axes_radius=0.0012,
-    )
-    server.scene.add_label(
-        "/leg/assembled_tip/label",
-        "leg assembled / thread tip",
-        position=(0.004, 0.004, -0.006),
-        font_size_mode="scene",
-        font_scene_height=0.0055,
     )
 
     table_handles = _add_parts(server, "/table", table_parts, "table", args.show_collisions)
@@ -378,8 +349,14 @@ def main() -> None:
     server.gui.add_markdown(
         "# FurnitureBench Leg Alignment\n"
         "Drag the transform controls to move the raw SquareLeg USD root. "
-        "The red axis on `/leg/policy_frame` is SimToolReal policy `+x`, "
-        "which points from handle to screw threads."
+        "No text labels are shown in the 3D scene so the threads and hole stay visible.\n\n"
+        "## Frames\n"
+        "- `/table`: raw tabletop USD root.\n"
+        "- `/table/assembled_hole`: OmniReset tabletop hole frame.\n"
+        "- `/leg`: raw SquareLeg USD root.\n"
+        "- `/leg/policy_frame`: SimToolReal object frame; red `+x` points from handle to screw threads.\n"
+        "- `/leg/assembled_tip`: leg thread-tip frame used for OmniReset success.\n"
+        "- `/goal_leg`: assembled-pose ghost."
     )
     show_collision_box = server.gui.add_checkbox("Show collision meshes", args.show_collisions)
     show_goal_box = server.gui.add_checkbox("Show assembled ghost", not args.hide_goal_ghost)
@@ -433,7 +410,6 @@ def main() -> None:
     @show_goal_box.on_update
     def _(_) -> None:
         goal_frame.visible = bool(show_goal_box.value)
-        goal_label.visible = bool(show_goal_box.value)
         for handle in goal_handles:
             handle.visible = bool(show_goal_box.value)
 
