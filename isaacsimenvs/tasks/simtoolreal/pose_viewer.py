@@ -34,6 +34,20 @@ TABLE_URDF_PATH = REPO_ROOT / "assets" / "urdf" / "table_narrow.urdf"
 FURNITURE_BENCH_RAW_BASE = (
     "https://raw.githubusercontent.com/clvrai/furniture-bench/main/"
 )
+FURNITUREBENCH_Y_UP_TO_USD_Z_UP_RPY = (1.5707963267948966, 0.0, 0.0)
+FURNITUREBENCH_VIEWER_ORIGINS = {
+    # The source FurnitureBench OBJ/URDF assets are Y-up.  OmniReset's sim USDs
+    # are Z-up.  These viewer-only origins make the Three.js URDF visuals match
+    # the USD root frames used by physics without embedding USD geometry in HTML.
+    "square_table_leg1.urdf": {
+        "xyz": (0.0, 0.0006175, -0.00019225),
+        "rpy": FURNITUREBENCH_Y_UP_TO_USD_Z_UP_RPY,
+    },
+    "square_table_top.urdf": {
+        "xyz": (0.0, 0.0000005, 0.0000494),
+        "rpy": FURNITUREBENCH_Y_UP_TO_USD_Z_UP_RPY,
+    },
+}
 
 
 def _to_numpy(value: Any) -> np.ndarray:
@@ -83,6 +97,33 @@ def _furniturebench_urdf_relpath(urdf_source: str | Path) -> str | None:
     return posixpath.join(*parts[furniture_idx:])
 
 
+def _furniturebench_viewer_origin(urdf_source: str | Path) -> dict[str, tuple[float, float, float]] | None:
+    if _is_url(urdf_source):
+        filename = Path(urlparse(str(urdf_source)).path).name
+    else:
+        filename = Path(urdf_source).name
+    return FURNITUREBENCH_VIEWER_ORIGINS.get(filename)
+
+
+def _format_origin_tuple(values: tuple[float, float, float]) -> str:
+    return " ".join(f"{value:.12g}" for value in values)
+
+
+def _apply_viewer_origin_to_mesh_elements(
+    root: ET.Element,
+    origin_cfg: dict[str, tuple[float, float, float]],
+) -> None:
+    for visual_or_collision in root.findall(".//visual") + root.findall(".//collision"):
+        if visual_or_collision.find("./geometry/mesh") is None:
+            continue
+        origin = visual_or_collision.find("origin")
+        if origin is None:
+            origin = ET.Element("origin")
+            visual_or_collision.insert(0, origin)
+        origin.attrib["xyz"] = _format_origin_tuple(origin_cfg["xyz"])
+        origin.attrib["rpy"] = _format_origin_tuple(origin_cfg["rpy"])
+
+
 def _rewrite_furniturebench_urdf_mesh_urls(urdf_text: str, urdf_source: str | Path) -> str:
     """Rewrite FurnitureBench URDF mesh paths to raw GitHub URLs for W&B HTML.
 
@@ -96,6 +137,10 @@ def _rewrite_furniturebench_urdf_mesh_urls(urdf_text: str, urdf_source: str | Pa
         return urdf_text
 
     root = ET.fromstring(urdf_text)
+    origin_cfg = _furniturebench_viewer_origin(urdf_source)
+    if origin_cfg is not None:
+        _apply_viewer_origin_to_mesh_elements(root, origin_cfg)
+
     urdf_dir_rel = posixpath.dirname(urdf_rel)
     for mesh in root.findall(".//mesh"):
         filename = mesh.attrib.get("filename")

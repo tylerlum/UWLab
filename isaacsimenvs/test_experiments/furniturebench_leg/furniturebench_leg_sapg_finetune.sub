@@ -41,10 +41,11 @@ FORCE_CONSECUTIVE_NEAR_GOAL="${FORCE_CONSECUTIVE_NEAR_GOAL:-false}"
 # Keep num_envs / expl_coef_block_size = 6 when possible to match the pretrained
 # SAPG coefficient-conditioned tensors exactly. The code can resize in
 # checkpoint_load_mode=weights, but exact block count is cleaner for real runs.
-# Default is A5000/24 GB conservative; use 6144/1024 on L40S and 12288/2048
-# on RTX PRO 6000 after smoke checks.
-NUM_ENVS="${NUM_ENVS:-4096}"
-EXPL_COEF_BLOCK_SIZE="${EXPL_COEF_BLOCK_SIZE:-1024}"
+# Default is A5000/24 GB conservative while keeping
+# num_envs / expl_coef_block_size = 6 to match the pretrained SAPG block count.
+# Use 6144/1024 on L40S and 12288/2048 on RTX PRO 6000 after smoke checks.
+NUM_ENVS="${NUM_ENVS:-3072}"
+EXPL_COEF_BLOCK_SIZE="${EXPL_COEF_BLOCK_SIZE:-512}"
 HORIZON_LENGTH="${HORIZON_LENGTH:-16}"
 SEQ_LENGTH="${SEQ_LENGTH:-16}"
 MINIBATCH_SIZE="${MINIBATCH_SIZE:-$((NUM_ENVS * HORIZON_LENGTH))}"
@@ -67,6 +68,9 @@ CAPTURE_VIEWER_WANDB_KEY="${CAPTURE_VIEWER_WANDB_KEY:-interactive_viewer}"
 WANDB_PROJECT="${WANDB_PROJECT:-UWLab-SimToolReal-FurnitureBenchLeg}"
 WANDB_GROUP="${WANDB_GROUP:-2026-05-06_leg_finetune}"
 WANDB_ENTITY="${WANDB_ENTITY:-}"
+if [ -z "${WANDB_API_KEY:-}" ] && [ -f "/juno/u/${USER}/.wandb_api_key" ]; then
+    export WANDB_API_KEY="$(tr -d '[:space:]' < "/juno/u/${USER}/.wandb_api_key")"
+fi
 
 if [ ! -d "$REPO_ROOT" ]; then
     echo "REPO_ROOT does not exist: $REPO_ROOT" >&2

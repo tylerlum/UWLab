@@ -199,7 +199,6 @@
       import * as THREE from "https://esm.sh/three@0.160.1";
       import { OrbitControls } from "https://esm.sh/three@0.160.1/examples/jsm/controls/OrbitControls.js";
       import { GLTFLoader } from "https://esm.sh/three@0.160.1/examples/jsm/loaders/GLTFLoader.js";
-      import { MTLLoader } from "https://esm.sh/three@0.160.1/examples/jsm/loaders/MTLLoader.js";
       import { OBJLoader } from "https://esm.sh/three@0.160.1/examples/jsm/loaders/OBJLoader.js";
       import { STLLoader } from "https://esm.sh/three@0.160.1/examples/jsm/loaders/STLLoader.js";
       import * as URDFLoaderModule from "https://esm.sh/urdf-loader@0.12.4?deps=three@0.160.1";
@@ -481,34 +480,12 @@
             const objLoader = new OBJLoader(loadingManager);
             const meshUrl = new URL(path, window.location.href);
             const baseUrl = new URL("./", meshUrl).toString();
-            const mtlUrl = new URL("material.mtl", meshUrl).toString();
-
-            const loadObj = (materials = null) => {
-              if (materials && !robotConfig.color_override) {
-                materials.preload();
-                objLoader.setMaterials(materials);
-              }
-              objLoader.setResourcePath(baseUrl);
-              objLoader.load(
-                path,
-                (object) => completeWithOverride(object),
-                undefined,
-                (error) => completeWithOverride(null, error),
-              );
-            };
-
-            if (robotConfig.color_override) {
-              loadObj();
-              return;
-            }
-
-            const mtlLoader = new MTLLoader(loadingManager);
-            mtlLoader.setResourcePath(baseUrl);
-            mtlLoader.load(
-              mtlUrl,
-              (materials) => loadObj(materials),
+            objLoader.setResourcePath(baseUrl);
+            objLoader.load(
+              path,
+              (object) => completeWithOverride(object),
               undefined,
-              () => loadObj(),
+              (error) => completeWithOverride(null, error),
             );
             return;
           }

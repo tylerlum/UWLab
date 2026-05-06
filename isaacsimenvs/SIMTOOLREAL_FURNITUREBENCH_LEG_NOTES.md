@@ -220,6 +220,18 @@ The viewer shows:
 
 This viewer also answers a common frame question: the SquareLeg mesh is not rewritten to make USD `+x` point along the long axis. The physical USD remains in its original frame. The handle-to-thread long-axis convention is applied as a virtual policy-frame transform in observations and when converting scripted policy goals back to the USD asset frame.
 
+The W&B/Three.js pose viewer is intentionally lighter weight than the Viser USD viewer. It still simulates with the OmniReset USDs, but renders the FurnitureBench URDF/OBJ meshes by URL instead of embedding USD geometry into the HTML. Those source OBJ meshes are Y-up:
+
+- `square_table_leg1.obj`: long axis is local `Y`.
+- `square_table_top.obj`: tabletop normal/thickness is local `Y`.
+
+OmniReset's USDs are Z-up:
+
+- `square_leg.usd`: long axis is local `Z`, with negative `Z` toward the screw threads.
+- `square_table_top.usd`: tabletop normal/thickness is local `Z`.
+
+For viewer-only HTML, `pose_viewer.py` rewrites the FurnitureBench URDF text to add a `+90 deg` roll about `X` on the mesh visual/collision origins, plus sub-millimeter bbox-center offsets. That makes the URL-loaded URDF visuals line up with the sim USD root frames without changing physics assets or bloating the HTML. The Three.js OBJ loader deliberately does not request a hard-coded `material.mtl`; FurnitureBench OBJ files reference per-object MTL names, and the pose viewer only needs geometry/color overrides.
+
 ### FurnitureBench mesh structure
 
 The FurnitureBench leg/tabletop pair is not a single monolithic mesh, and it is not loaded through URDF in this rollout. Each part is one USD file with multiple mesh prims:
