@@ -541,7 +541,7 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
             & (radial_error <= float(leg_cfg.screw_metric_hole_radius))
             & (object_pos[:, 2] <= final_z + float(leg_cfg.screw_metric_final_depth_margin))
         )
-        self._leg_screw_pushthrough = (
+        self._leg_screw_pushthrough |= (
             deep
             & (self._leg_screw_max_cw_turns < float(leg_cfg.screw_metric_min_turns_for_insert))
         )
