@@ -65,6 +65,7 @@ DENSE_DESCEND_STEPS="${DENSE_DESCEND_STEPS:-10}"
 DENSE_SCREW_TURNS="${DENSE_SCREW_TURNS:-1.0}"
 SCREW_METRIC_MIN_TURNS_FOR_INSERT="${SCREW_METRIC_MIN_TURNS_FOR_INSERT:-0.5}"
 SCREW_METRIC_HOLE_RADIUS="${SCREW_METRIC_HOLE_RADIUS:-0.02}"
+FINAL_SUCCESS_REQUIRES_SCREW_INSERT_LIKE="${FINAL_SUCCESS_REQUIRES_SCREW_INSERT_LIKE:-false}"
 
 # Keep num_envs / expl_coef_block_size = 6 when possible to match the pretrained
 # SAPG coefficient-conditioned tensors exactly. The code can resize in
@@ -145,6 +146,7 @@ echo "Fixture/goal:  $FIXTURE_XY_OFFSET / $GOAL_XY_OFFSET"
 echo "OmniReset tol: $OMNIRESET_POSITION_SUCCESS_THRESHOLD m / $OMNIRESET_ORIENTATION_SUCCESS_THRESHOLD rad"
 echo "Dense screw:   $DENSE_DESCEND_STEPS steps / $DENSE_SCREW_TURNS turns"
 echo "Screw metric:  min_turns=$SCREW_METRIC_MIN_TURNS_FOR_INSERT hole_radius=$SCREW_METRIC_HOLE_RADIUS"
+echo "Screw gate:    final_success_requires_insert_like=$FINAL_SUCCESS_REQUIRES_SCREW_INSERT_LIKE"
 echo "Capture video: $CAPTURE_VIDEO"
 echo "Viewer:        len=$CAPTURE_VIEWER_LEN interval=$CAPTURE_VIEWER_INTERVAL full=$CAPTURE_VIEWER_FULL_EPISODES episodes=$CAPTURE_VIEWER_EPISODES"
 echo "Num envs:      $NUM_ENVS"
@@ -240,6 +242,7 @@ fi
     env.furniturebench_leg.dense_screw_turns="$DENSE_SCREW_TURNS" \
     env.furniturebench_leg.screw_metric_min_turns_for_insert="$SCREW_METRIC_MIN_TURNS_FOR_INSERT" \
     env.furniturebench_leg.screw_metric_hole_radius="$SCREW_METRIC_HOLE_RADIUS" \
+    env.furniturebench_leg.final_success_requires_screw_insert_like="$FINAL_SUCCESS_REQUIRES_SCREW_INSERT_LIKE" \
     "env.furniturebench_leg.fixture_xy_offset=$FIXTURE_XY_OFFSET" \
     "env.furniturebench_leg.goal_xy_offset=$GOAL_XY_OFFSET" \
     "env.furniturebench_leg.random_start_xy_center=$RANDOM_START_XY_CENTER" \

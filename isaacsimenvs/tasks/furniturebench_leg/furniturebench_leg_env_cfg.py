@@ -43,6 +43,7 @@ class FurnitureBenchLegCfg:
     screw_metric_entry_z_margin: float = 0.005
     screw_metric_final_depth_margin: float = 0.005
     screw_metric_min_turns_for_insert: float = 0.5
+    final_success_requires_screw_insert_like: bool = False
     enable_retract: bool = False
     retract_reward_scale: float = 1.0
     retract_distance_threshold: float = 0.1
