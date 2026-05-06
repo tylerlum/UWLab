@@ -55,6 +55,16 @@ FURNITUREBENCH_TABLE_HOLES = np.array(
     dtype=np.float32,
 )
 
+# OmniReset FurnitureBench metadata assembled offsets.  With the raw SquareLeg
+# USD upright at identity, the final assembled leg root is:
+# table_root + table_assembled - leg_assembled.
+FURNITUREBENCH_TABLE_ASSEMBLED_OFFSET = np.array(
+    [0.05625, 0.05625, -0.009435], dtype=np.float32
+)
+FURNITUREBENCH_LEG_ASSEMBLED_OFFSET = np.array(
+    [0.0, 0.0, -0.056658], dtype=np.float32
+)
+
 # Graspable cuboidal handle bbox in policy frame, encoded by SimToolReal as
 # metric dimensions multiplied by 25.
 FURNITUREBENCH_LEG_OBJECT_SCALE = (
@@ -129,11 +139,45 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--teleport_keep_velocity", action="store_true")
     parser.add_argument("--ignore_dones", action="store_true")
+    parser.add_argument(
+        "--continue_after_all_goals",
+        action="store_true",
+        help="Keep simulating on the final goal after the sequence is completed.",
+    )
 
     parser.add_argument("--leg_hole_index", type=int, default=0, choices=range(4))
+    parser.add_argument(
+        "--leg_goal_sequence",
+        choices=("dense", "final_only", "preinsert_final", "pingpong"),
+        default="dense",
+        help="FurnitureBench leg goal sequence to expose to the policy or teleport driver.",
+    )
     parser.add_argument("--leg_hover_height", type=float, default=0.12)
     parser.add_argument("--leg_preinsert_height", type=float, default=0.070)
     parser.add_argument("--leg_insert_height", type=float, default=0.038)
+    parser.add_argument(
+        "--leg_use_omnireset_final_height",
+        action="store_true",
+        help="Use OmniReset metadata assembled offsets for the final insert root height.",
+    )
+    parser.add_argument(
+        "--leg_preinsert_yaw_offset_deg",
+        type=float,
+        default=0.0,
+        help="Raw upright-leg +Z yaw offset for the pre-insert pose; positive is CCW from above.",
+    )
+    parser.add_argument(
+        "--leg_final_yaw_offset_deg",
+        type=float,
+        default=0.0,
+        help="Raw upright-leg +Z yaw offset for the final insert pose; positive is CCW from above.",
+    )
+    parser.add_argument(
+        "--leg_pingpong_cycles",
+        type=int,
+        default=20,
+        help="Number of preinsert/final repetitions for --leg_goal_sequence pingpong.",
+    )
     parser.add_argument("--leg_descend_steps", type=int, default=4)
     parser.add_argument(
         "--leg_spin_mode",
@@ -246,6 +290,19 @@ def _leg_asset_to_policy_pose_xyzw(asset_pose: np.ndarray) -> np.ndarray:
     return pose
 
 
+def _upright_leg_policy_pose(pos: np.ndarray, yaw_rad: float) -> np.ndarray:
+    """Return a policy-frame pose for an upright raw SquareLeg asset.
+
+    Raw SquareLeg ``+Z`` points from screw threads toward the handle, so the
+    inserted/upright asset orientation is just a yaw about raw/world ``+Z``.
+    """
+    asset_pose = np.array(
+        [float(pos[0]), float(pos[1]), float(pos[2]), *R.from_euler("z", yaw_rad).as_quat()],
+        dtype=np.float32,
+    )
+    return _leg_asset_to_policy_pose_xyzw(asset_pose)
+
+
 def _keypoints_from_pose_xyzw(
     pose_xyzw: np.ndarray,
     object_scale: np.ndarray,
@@ -299,49 +356,94 @@ def _make_furniturebench_leg_trajectory(args) -> tuple[np.ndarray, list[np.ndarr
     fixture_root = np.array([0.0, 0.0, fixture_root_z], dtype=np.float32)
     hole = fixture_root + FURNITUREBENCH_TABLE_HOLES[args.leg_hole_index]
 
-    base_quat = _quat_matrix_xyzw(R_USD_POLICY_LEG)
-    start_pose = np.array([0.10, 0.08, hole[2] + 0.18, *base_quat], dtype=np.float32)
-    goals = [
-        np.array([hole[0], hole[1], hole[2] + args.leg_hover_height, *base_quat], dtype=np.float32),
-        np.array([hole[0], hole[1], hole[2] + args.leg_preinsert_height, *base_quat], dtype=np.float32),
-    ]
+    if bool(args.leg_use_omnireset_final_height):
+        final_z = (
+            fixture_root[2]
+            + FURNITUREBENCH_TABLE_ASSEMBLED_OFFSET[2]
+            - FURNITUREBENCH_LEG_ASSEMBLED_OFFSET[2]
+        )
+    else:
+        final_z = hole[2] + float(args.leg_insert_height)
+
+    preinsert_yaw = np.deg2rad(float(args.leg_preinsert_yaw_offset_deg))
+    final_yaw = np.deg2rad(float(args.leg_final_yaw_offset_deg))
+    hover_pose = _upright_leg_policy_pose(
+        np.array([hole[0], hole[1], hole[2] + args.leg_hover_height], dtype=np.float32),
+        final_yaw,
+    )
+    preinsert_pose = _upright_leg_policy_pose(
+        np.array([hole[0], hole[1], hole[2] + args.leg_preinsert_height], dtype=np.float32),
+        preinsert_yaw,
+    )
+    final_pose = _upright_leg_policy_pose(
+        np.array([hole[0], hole[1], final_z], dtype=np.float32),
+        final_yaw,
+    )
+    start_pose = _upright_leg_policy_pose(
+        np.array([0.10, 0.08, hole[2] + 0.18], dtype=np.float32),
+        final_yaw,
+    )
+
+    if args.leg_goal_sequence == "final_only":
+        return start_pose, [final_pose], fixture_root
+    if args.leg_goal_sequence == "preinsert_final":
+        return start_pose, [preinsert_pose, final_pose], fixture_root
+    if args.leg_goal_sequence == "pingpong":
+        goals = []
+        for _ in range(max(1, int(args.leg_pingpong_cycles))):
+            goals.extend([preinsert_pose.copy(), final_pose.copy()])
+        return start_pose, goals, fixture_root
+
+    goals = [hover_pose, preinsert_pose]
 
     has_spin = int(args.leg_spin_steps) > 0 and abs(float(args.leg_spin_turns)) > 1.0e-8
     if has_spin and args.leg_spin_mode == "helical":
-        # Policy +x points down into the hole. By the right-hand rule, positive
-        # local +x rotation appears clockwise when viewed from above.
+        # Positive leg_spin_turns means clockwise from above: raw asset yaw
+        # decreases about +Z, equivalent to positive policy-local +X.
         total_spin = 2.0 * np.pi * float(args.leg_spin_turns)
         spin_steps = int(args.leg_spin_steps)
         heights = np.linspace(
             float(args.leg_preinsert_height),
-            float(args.leg_insert_height),
+            float(final_z - hole[2]),
             spin_steps + 1,
             dtype=np.float32,
         )[1:]
         thetas = np.linspace(total_spin / spin_steps, total_spin, spin_steps)
         for height, theta in zip(heights, thetas, strict=True):
-            spin_quat = _quat_multiply_xyzw(base_quat, R.from_euler("x", theta).as_quat())
-            goals.append(np.array([hole[0], hole[1], hole[2] + height, *spin_quat], dtype=np.float32))
+            yaw = preinsert_yaw - theta
+            goals.append(
+                _upright_leg_policy_pose(
+                    np.array([hole[0], hole[1], hole[2] + height], dtype=np.float32),
+                    yaw,
+                )
+            )
         return start_pose, goals, fixture_root
 
     descend_steps = max(1, int(args.leg_descend_steps))
     descend_heights = np.linspace(
         float(args.leg_preinsert_height),
-        float(args.leg_insert_height),
+        float(final_z - hole[2]),
         descend_steps + 1,
         dtype=np.float32,
     )[1:]
     for height in descend_heights:
-        goals.append(np.array([hole[0], hole[1], hole[2] + height, *base_quat], dtype=np.float32))
+        goals.append(
+            _upright_leg_policy_pose(
+                np.array([hole[0], hole[1], hole[2] + height], dtype=np.float32),
+                preinsert_yaw,
+            )
+        )
 
     if has_spin:
         # Policy +x points down into the hole. Positive turns spin into a
-        # right-handed thread when viewed from above/down the hole.
+        # right-handed thread: raw asset yaw decreases about +Z.
         total_spin = 2.0 * np.pi * float(args.leg_spin_turns)
         for theta in np.linspace(total_spin / args.leg_spin_steps, total_spin, args.leg_spin_steps):
-            spin_quat = _quat_multiply_xyzw(base_quat, R.from_euler("x", theta).as_quat())
             goals.append(
-                np.array([hole[0], hole[1], hole[2] + args.leg_insert_height, *spin_quat], dtype=np.float32)
+                _upright_leg_policy_pose(
+                    np.array([hole[0], hole[1], final_z], dtype=np.float32),
+                    preinsert_yaw - theta,
+                )
             )
     return start_pose, goals, fixture_root
 
@@ -792,7 +894,9 @@ def main() -> int:
             near_goal_steps = 0
             if current_goal_idx >= len(goals):
                 print(f"[rollout] all goals reached at step {step}", flush=True)
-                break
+                if not bool(args.continue_after_all_goals):
+                    break
+                current_goal_idx = len(goals) - 1
             _write_goal(inner, args, goals[current_goal_idx])
             obs = inner._get_observations()
 
