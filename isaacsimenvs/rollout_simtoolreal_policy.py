@@ -33,6 +33,13 @@ FURNITUREBENCH_ASSET_ROOTS = (
     / "omnireset_assets"
     / "FurnitureBench",
 )
+OMNIRESET_DATASET_ROOT_URL = (
+    "https://huggingface.co/datasets/UW-Lab/uwlab-assets/resolve/main/Datasets/OmniReset"
+)
+OMNIRESET_DATASET_CACHE_ROOT = (
+    REPO_ROOT / ".pretrained_checkpoints" / "SimToolReal" / "omnireset_datasets"
+)
+FURNITUREBENCH_OMNIRESET_PAIR_DIR = "SquareLeg__SquareTableTop"
 
 # Columns are policy-frame axes expressed in the SquareLeg USD root frame:
 # policy +x is USD -z, i.e. from the cuboidal handle toward the screw threads.
@@ -154,6 +161,44 @@ def _build_parser() -> argparse.ArgumentParser:
         "--teleport_skip_start_pose",
         action="store_true",
         help="Teleport through goal waypoints only, skipping the scripted initial object pose.",
+    )
+    parser.add_argument(
+        "--teleport_loop",
+        action="store_true",
+        help="Wrap around to the first teleport pose after the sequence reaches the end.",
+    )
+    parser.add_argument(
+        "--teleport_pose_source",
+        choices=("planned", "omnireset_partial_assemblies"),
+        default="planned",
+        help="Use scripted poses, or cycle through OmniReset partial assembly dataset poses.",
+    )
+    parser.add_argument(
+        "--teleport_dataset_dir",
+        default=OMNIRESET_DATASET_ROOT_URL,
+        help="Local or URL root containing OmniReset/Resets/<pair>/partial_assemblies.pt.",
+    )
+    parser.add_argument(
+        "--teleport_dataset_path",
+        default=None,
+        help="Explicit local path or URL to an OmniReset partial_assemblies.pt file.",
+    )
+    parser.add_argument(
+        "--teleport_dataset_start_index",
+        type=int,
+        default=0,
+        help="First stored OmniReset partial assembly pose to use.",
+    )
+    parser.add_argument(
+        "--teleport_dataset_count",
+        type=int,
+        default=16,
+        help="Number of stored OmniReset partial assembly poses to cycle through.",
+    )
+    parser.add_argument(
+        "--teleport_dataset_alternate_final",
+        action="store_true",
+        help="Alternate each stored OmniReset partial pose with the scripted final inserted pose.",
     )
     parser.add_argument("--teleport_keep_velocity", action="store_true")
     parser.add_argument("--ignore_dones", action="store_true")
@@ -361,6 +406,111 @@ def _densify_pose_sequence_xyzw(poses: list[np.ndarray], per_segment: int) -> li
     return dense
 
 
+def _is_url(path: str) -> bool:
+    return path.startswith("http://") or path.startswith("https://")
+
+
+def _join_local_or_url(root: str, *parts: str) -> str:
+    root = str(root).rstrip("/")
+    if _is_url(root):
+        return "/".join([root, *parts])
+    return str(Path(root).expanduser().joinpath(*parts))
+
+
+def _resolve_dataset_file(path_or_url: str) -> Path:
+    if _is_url(path_or_url):
+        from urllib.parse import urlparse
+        from urllib.request import urlretrieve
+
+        parsed = urlparse(path_or_url)
+        marker = "/Datasets/OmniReset/"
+        if marker in parsed.path:
+            rel_path = Path(parsed.path.split(marker, 1)[1])
+        else:
+            rel_path = Path(parsed.path.lstrip("/")).name
+        target = OMNIRESET_DATASET_CACHE_ROOT / rel_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if not target.exists():
+            print(f"[rollout] downloading OmniReset dataset {path_or_url} -> {target}", flush=True)
+            urlretrieve(path_or_url, target)
+        return target
+
+    path = Path(path_or_url).expanduser()
+    if not path.exists():
+        raise FileNotFoundError(f"OmniReset dataset file does not exist: {path}")
+    return path
+
+
+def _torch_load_cpu(path: Path):
+    import torch
+
+    try:
+        return torch.load(path, map_location="cpu", weights_only=False)
+    except TypeError:
+        return torch.load(path, map_location="cpu")
+
+
+def _to_numpy(value) -> np.ndarray:
+    if hasattr(value, "detach"):
+        return value.detach().cpu().numpy()
+    return np.asarray(value)
+
+
+def _compose_pose_wxyz(parent_pose_wxyz: np.ndarray, child_pose_wxyz: np.ndarray) -> np.ndarray:
+    parent_pose_wxyz = np.asarray(parent_pose_wxyz, dtype=np.float32)
+    child_pose_wxyz = np.asarray(child_pose_wxyz, dtype=np.float32)
+    parent_rot = R.from_quat(wxyz_to_xyzw(parent_pose_wxyz[3:7]))
+    child_rot = R.from_quat(wxyz_to_xyzw(child_pose_wxyz[3:7]))
+    pos = parent_pose_wxyz[:3] + parent_rot.apply(child_pose_wxyz[:3]).astype(np.float32)
+    quat_xyzw = (parent_rot * child_rot).as_quat().astype(np.float32)
+    return np.concatenate([pos.astype(np.float32), xyzw_to_wxyz(quat_xyzw)]).astype(np.float32)
+
+
+def _omnireset_partial_assembly_dataset_path(args) -> str:
+    if args.teleport_dataset_path is not None:
+        return str(args.teleport_dataset_path)
+    return _join_local_or_url(
+        str(args.teleport_dataset_dir),
+        "Resets",
+        FURNITUREBENCH_OMNIRESET_PAIR_DIR,
+        "partial_assemblies.pt",
+    )
+
+
+def _load_omnireset_partial_assembly_policy_poses(args, cfg) -> list[np.ndarray]:
+    if args.scenario != "furniturebench_leg":
+        raise ValueError("--teleport_pose_source omnireset_partial_assemblies is only valid for furniturebench_leg.")
+
+    dataset_file = _resolve_dataset_file(_omnireset_partial_assembly_dataset_path(args))
+    data = _torch_load_cpu(dataset_file)
+    rel_pos = _to_numpy(data["relative_position"]).astype(np.float32)
+    rel_quat_wxyz = _to_numpy(data["relative_orientation"]).astype(np.float32)
+    if rel_pos.shape[0] != rel_quat_wxyz.shape[0]:
+        raise ValueError(
+            "OmniReset partial_assemblies.pt has mismatched relative_position and "
+            f"relative_orientation lengths: {rel_pos.shape[0]} vs {rel_quat_wxyz.shape[0]}"
+        )
+
+    num_available = int(rel_pos.shape[0])
+    num_requested = max(1, int(args.teleport_dataset_count))
+    start_index = int(args.teleport_dataset_start_index) % num_available
+    fixture_pose_wxyz = np.asarray(cfg.reset.fixed_fixture_pose, dtype=np.float32)
+
+    poses: list[np.ndarray] = []
+    for offset in range(num_requested):
+        idx = (start_index + offset) % num_available
+        rel_pose_wxyz = np.concatenate([rel_pos[idx], rel_quat_wxyz[idx]]).astype(np.float32)
+        asset_pose_wxyz = _compose_pose_wxyz(fixture_pose_wxyz, rel_pose_wxyz)
+        poses.append(_leg_asset_to_policy_pose_xyzw(pose_wxyz_to_xyzw(asset_pose_wxyz)))
+
+    print(
+        f"[rollout] loaded {len(poses)} OmniReset partial assembly pose(s) "
+        f"from {dataset_file} start_index={start_index} available={num_available}",
+        flush=True,
+    )
+    return poses
+
+
 def _policy_to_leg_asset_pose_xyzw(policy_pose: np.ndarray) -> np.ndarray:
     pose = np.asarray(policy_pose, dtype=np.float32).copy()
     q_policy_asset = _quat_matrix_xyzw(R_USD_POLICY_LEG.T)
@@ -527,7 +677,7 @@ def _make_furniturebench_leg_trajectory(args) -> tuple[np.ndarray, list[np.ndarr
 
     has_spin = int(args.leg_spin_steps) > 0 and abs(float(args.leg_spin_turns)) > 1.0e-8
     if args.leg_spin_mode == "interpolate":
-        for pose in _densify_pose_sequence([preinsert_pose, final_pose], max(1, int(args.leg_descend_steps)))[1:]:
+        for pose in _densify_pose_sequence_xyzw([preinsert_pose, final_pose], max(1, int(args.leg_descend_steps)))[1:]:
             goals.append(pose)
         return start_pose, goals, fixture_root
 
@@ -823,15 +973,57 @@ def _write_object_pose(inner, args, object_policy_xyzw: np.ndarray, *, zero_velo
         )
 
 
-def _teleport_pose_for_step(teleport_poses: list[np.ndarray], step: int, interval_steps: int) -> tuple[int, np.ndarray]:
-    segment = min(step // interval_steps, max(0, len(teleport_poses) - 1))
-    if segment >= len(teleport_poses) - 1:
+def _teleport_waypoint_index(
+    teleport_poses: list[np.ndarray],
+    step: int,
+    interval_steps: int,
+    *,
+    loop: bool,
+) -> int:
+    if not teleport_poses:
+        return 0
+    raw_index = step // interval_steps
+    if loop:
+        return raw_index % len(teleport_poses)
+    return min(raw_index, len(teleport_poses) - 1)
+
+
+def _teleport_pose_for_step(
+    teleport_poses: list[np.ndarray],
+    step: int,
+    interval_steps: int,
+    *,
+    loop: bool,
+) -> tuple[int, np.ndarray]:
+    segment = _teleport_waypoint_index(teleport_poses, step, interval_steps, loop=loop)
+    if segment >= len(teleport_poses) - 1 and not loop:
         return segment, teleport_poses[-1]
+    next_segment = (segment + 1) % len(teleport_poses)
+    if next_segment == segment:
+        return segment, teleport_poses[segment]
     fraction = (step % interval_steps) / float(interval_steps)
     return segment, _interpolate_pose_xyzw(
         teleport_poses[segment],
-        teleport_poses[segment + 1],
+        teleport_poses[next_segment],
         fraction,
+    )
+
+
+def _make_teleport_source_poses(args, cfg, start_pose: np.ndarray, goals: list[np.ndarray]) -> list[np.ndarray]:
+    if args.teleport_pose_source == "omnireset_partial_assemblies":
+        source_poses = _load_omnireset_partial_assembly_policy_poses(args, cfg)
+        if bool(args.teleport_dataset_alternate_final):
+            final_pose = np.asarray(goals[-1], dtype=np.float32)
+            alternated: list[np.ndarray] = []
+            for pose in source_poses:
+                alternated.extend([np.asarray(pose, dtype=np.float32), final_pose.copy()])
+            source_poses = alternated
+        return source_poses
+
+    return (
+        [*goals]
+        if bool(args.teleport_skip_start_pose)
+        else [np.asarray(start_pose, dtype=np.float32), *goals]
     )
 
 
@@ -878,11 +1070,7 @@ def main() -> int:
     teleport_poses: list[np.ndarray] = []
     teleport_interval_steps = max(1, int(round(float(args.teleport_interval_s) / float(inner.step_dt))))
     if args.object_drive_mode == "teleport_trajectory":
-        teleport_source_poses = (
-            [*goals]
-            if bool(args.teleport_skip_start_pose)
-            else [np.asarray(start_pose, dtype=np.float32), *goals]
-        )
+        teleport_source_poses = _make_teleport_source_poses(args, cfg, start_pose, goals)
         teleport_poses = _densify_pose_sequence_xyzw(
             teleport_source_poses,
             int(args.teleport_waypoints_per_segment),
@@ -937,7 +1125,9 @@ def main() -> int:
             f"interval_s={teleport_interval_steps * inner.step_dt:.3f} "
             f"write_every_step={bool(args.teleport_write_every_step)} "
             f"interpolate={bool(args.teleport_interpolate_between_waypoints)} "
-            f"skip_start={bool(args.teleport_skip_start_pose)}",
+            f"skip_start={bool(args.teleport_skip_start_pose)} "
+            f"loop={bool(args.teleport_loop)} "
+            f"source={args.teleport_pose_source}",
             flush=True,
         )
 
@@ -947,10 +1137,18 @@ def main() -> int:
             if args.teleport_write_every_step:
                 if args.teleport_interpolate_between_waypoints:
                     teleport_goal_idx, active_teleport_pose = _teleport_pose_for_step(
-                        teleport_poses, step, teleport_interval_steps
+                        teleport_poses,
+                        step,
+                        teleport_interval_steps,
+                        loop=bool(args.teleport_loop),
                     )
                 else:
-                    teleport_goal_idx = min(step // teleport_interval_steps, len(teleport_poses) - 1)
+                    teleport_goal_idx = _teleport_waypoint_index(
+                        teleport_poses,
+                        step,
+                        teleport_interval_steps,
+                        loop=bool(args.teleport_loop),
+                    )
                     active_teleport_pose = teleport_poses[teleport_goal_idx]
                 _write_object_pose(
                     inner,
@@ -962,7 +1160,12 @@ def main() -> int:
                     _write_goal(inner, args, active_teleport_pose)
                     obs = inner._get_observations()
             elif step % teleport_interval_steps == 0:
-                teleport_goal_idx = min(step // teleport_interval_steps, len(teleport_poses) - 1)
+                teleport_goal_idx = _teleport_waypoint_index(
+                    teleport_poses,
+                    step,
+                    teleport_interval_steps,
+                    loop=bool(args.teleport_loop),
+                )
                 active_teleport_pose = teleport_poses[teleport_goal_idx]
                 _write_object_pose(
                     inner,
@@ -1087,6 +1290,8 @@ def main() -> int:
         scenario=args.scenario,
         robot_control_mode=args.robot_control_mode,
         object_drive_mode=args.object_drive_mode,
+        teleport_pose_source=args.teleport_pose_source,
+        teleport_loop=np.asarray([bool(args.teleport_loop)], dtype=np.bool_),
         goal_viz_visible=np.asarray([bool(args.goal_viz_visible)], dtype=np.bool_),
     )
     print(f"[rollout] wrote {npz_path}", flush=True)
