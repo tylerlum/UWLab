@@ -628,3 +628,21 @@ Useful checks when modifying the leg task:
 - For contact sanity, use fixed robot plus teleport trajectory before trusting closed-loop policy behavior.
 - For screw sanity, watch whether the threaded end jams/spins rather than translating straight through SDF hole geometry.
 - If the leg explodes or tunnels, try the OmniReset physics profile before changing object frames or reward code.
+
+## Training Success Criterion
+
+The FurnitureBench leg finetune uses `success_mode=omnireset_alignment`.
+For this mode, success is intentionally task-metadata style rather than the
+generic SimToolReal curriculum tolerance:
+
+```text
+position error threshold = 0.0025 m
+xy orientation error threshold = 0.025 rad
+force_consecutive_near_goal_steps = true
+success_steps = 10
+```
+
+The yaw component is ignored, matching the OmniReset assembled-frame check for
+threaded tasks where yaw phase is not a unique success variable. Do not use the
+generic `termination.success_tolerance=0.01` as the final leg success threshold;
+that is too loose for this task.

@@ -46,7 +46,7 @@ GOAL_MODE="${GOAL_MODE:-finalGoalOnly}"                         # finalGoalOnly 
 INIT_MODE="${INIT_MODE:-omnireset_partial_assemblies}"           # omnireset_partial_assemblies | upright_fixed | random_table
 SUCCESS_MODE="${SUCCESS_MODE:-omnireset_alignment}"              # omnireset_alignment | simtoolreal_keypoints
 ENABLE_RETRACT="${ENABLE_RETRACT:-false}"
-FORCE_CONSECUTIVE_NEAR_GOAL="${FORCE_CONSECUTIVE_NEAR_GOAL:-false}"
+FORCE_CONSECUTIVE_NEAR_GOAL="${FORCE_CONSECUTIVE_NEAR_GOAL:-true}"
 
 # Keep num_envs / expl_coef_block_size = 6 when possible to match the pretrained
 # SAPG coefficient-conditioned tensors exactly. The code can resize in

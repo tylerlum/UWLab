@@ -144,7 +144,7 @@ termination:
   eval_success_tolerance: null
   success_steps: 10
   max_consecutive_successes: 1
-  force_consecutive_near_goal_steps: false
+  force_consecutive_near_goal_steps: true
   auto_goal_reset_on_success: false
   tolerance_curriculum_increment: 0.9
   tolerance_curriculum_interval: 3000

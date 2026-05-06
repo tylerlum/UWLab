@@ -467,10 +467,7 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
 
         self._omnireset_pos_align_error = pos_error
         self._omnireset_xy_rot_align_error = xy_rot_error
-        pos_threshold = max(
-            float(self._current_success_tolerance),
-            float(leg_cfg.omnireset_position_success_threshold),
-        )
+        pos_threshold = float(leg_cfg.omnireset_position_success_threshold)
         ori_threshold = float(leg_cfg.omnireset_orientation_success_threshold)
         self._omnireset_position_aligned = pos_error < pos_threshold
         self._omnireset_orientation_aligned = xy_rot_error < ori_threshold

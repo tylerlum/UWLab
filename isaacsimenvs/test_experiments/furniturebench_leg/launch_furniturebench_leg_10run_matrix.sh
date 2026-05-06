@@ -27,7 +27,7 @@ SEQ_LENGTH="${SEQ_LENGTH:-16}"
 SBATCH_MEM="${SBATCH_MEM:-128000}"
 SUCCESS_MODE="${SUCCESS_MODE:-omnireset_alignment}"
 ENABLE_RETRACT="${ENABLE_RETRACT:-false}"
-FORCE_CONSECUTIVE_NEAR_GOAL="${FORCE_CONSECUTIVE_NEAR_GOAL:-false}"
+FORCE_CONSECUTIVE_NEAR_GOAL="${FORCE_CONSECUTIVE_NEAR_GOAL:-true}"
 
 # Override these if the cluster node layout changes.  The current Slurm
 # features are coarse (for example `24G,turing`), so node pinning is the
