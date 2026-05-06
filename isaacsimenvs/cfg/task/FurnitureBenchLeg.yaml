@@ -77,6 +77,8 @@ furniturebench_leg:
   retract_success_bonus: 1000.0
   retract_success_tolerance: 0.005
   policy_frame_pos_offset_asset: [0.0, 0.0, 0.0]
+  fixture_xy_offset: [0.0, 0.0]
+  goal_xy_offset: [0.0, 0.0]
   random_start_xy_center: [0.10, 0.08]
   random_start_xy_range: [0.025, 0.025]
   random_start_z_offset_from_hole: 0.18

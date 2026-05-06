@@ -153,6 +153,7 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
         super().__init__(cfg, render_mode, **kwargs)
 
         self._leg_fixture_root_local = self._compute_fixture_root_local()
+        self._leg_goal_root_local = self._compute_goal_root_local()
         self._leg_goals_asset_t = self._build_goal_sequence_asset()
         self._leg_num_goals = int(self._leg_goals_asset_t.shape[0])
         cfg.termination.max_consecutive_successes = self._leg_num_goals
@@ -178,6 +179,7 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
         self._omnireset_xy_rot_align_error = torch.zeros(self.num_envs, device=self.device)
         self._omnireset_position_aligned = torch.zeros_like(self.retract_phase)
         self._omnireset_orientation_aligned = torch.zeros_like(self.retract_phase)
+        self._keypoint_near_goal_for_active_goal = torch.zeros_like(self.retract_phase)
 
         self._partial_pos_t: torch.Tensor | None = None
         self._partial_quat_t: torch.Tensor | None = None
@@ -226,7 +228,16 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
             - FIXTURE_LOCAL_BOTTOM_Z
             + float(cfg.furniturebench_leg.fixture_clearance)
         )
-        cfg.reset.fixed_fixture_pose = (0.0, 0.0, fixture_root_z, 1.0, 0.0, 0.0, 0.0)
+        fixture_xy = tuple(float(x) for x in cfg.furniturebench_leg.fixture_xy_offset)
+        cfg.reset.fixed_fixture_pose = (
+            fixture_xy[0],
+            fixture_xy[1],
+            fixture_root_z,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+        )
 
     def _apply_omnireset_physics_profile(self, cfg: FurnitureBenchLegEnvCfg) -> None:
         physx = cfg.sim.physx
@@ -258,19 +269,31 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
 
     def _compute_fixture_root_local(self) -> torch.Tensor:
         leg_cfg = self.cfg.furniturebench_leg
+        fixture_xy = tuple(float(x) for x in leg_cfg.fixture_xy_offset)
         z = (
             float(self.cfg.reset.table_reset_z)
             + SIMTOOLREAL_TABLE_HALF_HEIGHT
             - FIXTURE_LOCAL_BOTTOM_Z
             + float(leg_cfg.fixture_clearance)
         )
-        return torch.tensor([0.0, 0.0, z], device=self.device, dtype=torch.float32)
+        return torch.tensor([fixture_xy[0], fixture_xy[1], z], device=self.device, dtype=torch.float32)
+
+    def _compute_goal_root_local(self) -> torch.Tensor:
+        leg_cfg = self.cfg.furniturebench_leg
+        goal_xy = tuple(float(x) for x in leg_cfg.goal_xy_offset)
+        z = (
+            float(self.cfg.reset.table_reset_z)
+            + SIMTOOLREAL_TABLE_HALF_HEIGHT
+            - FIXTURE_LOCAL_BOTTOM_Z
+            + float(leg_cfg.fixture_clearance)
+        )
+        return torch.tensor([goal_xy[0], goal_xy[1], z], device=self.device, dtype=torch.float32)
 
     def _hole_pos_local(self) -> torch.Tensor:
         hole_index = int(self.cfg.furniturebench_leg.hole_index)
         if hole_index < 0 or hole_index >= len(TABLE_HOLES):
             raise ValueError(f"hole_index must be in [0, {len(TABLE_HOLES)}), got {hole_index}")
-        return self._leg_fixture_root_local + torch.tensor(TABLE_HOLES[hole_index], device=self.device)
+        return self._leg_goal_root_local + torch.tensor(TABLE_HOLES[hole_index], device=self.device)
 
     def _asset_pose(self, pos: torch.Tensor, yaw_rad: float) -> torch.Tensor:
         pos = pos.to(self.device, dtype=torch.float32).reshape(3)
@@ -364,8 +387,8 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
         hole = self._hole_pos_local()
         pose = torch.zeros(n, 7, device=self.device)
         if mode == "upright_fixed":
-            pose[:, 0] = 0.10
-            pose[:, 1] = 0.08
+            xy_center = torch.tensor(leg_cfg.random_start_xy_center, device=self.device)
+            pose[:, 0:2] = xy_center.unsqueeze(0)
             pose[:, 2] = hole[2] + float(leg_cfg.random_start_z_offset_from_hole)
             pose[:, 3:7] = _quat_yaw(
                 self.device,
@@ -428,8 +451,8 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
             torch.zeros(env_ids.numel(), 6, device=self.device), env_ids=env_ids
         )
 
-    def _compute_omnireset_alignment_success(self) -> torch.Tensor:
-        """Apply OmniReset's assembled-frame success check.
+    def _compute_omnireset_alignment_near_goal(self) -> torch.Tensor:
+        """Apply OmniReset's assembled-frame final-goal check.
 
         OmniReset compares the insertive and receptive assembled frames, then
         ignores yaw.  This matters for threaded objects where final yaw is not
@@ -472,14 +495,7 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
         self._omnireset_position_aligned = pos_error < pos_threshold
         self._omnireset_orientation_aligned = xy_rot_error < ori_threshold
 
-        self._near_goal = self._omnireset_position_aligned & self._omnireset_orientation_aligned
-        self._near_goal_steps = update_near_goal_steps(
-            near_goal=self._near_goal,
-            near_goal_steps=self._near_goal_steps,
-            force_consecutive=self.cfg.termination.force_consecutive_near_goal_steps,
-        )
-        self._is_success = self._near_goal_steps >= self.cfg.termination.success_steps
-        return self._is_success
+        return self._omnireset_position_aligned & self._omnireset_orientation_aligned
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         update_tolerance_curriculum(self)
@@ -488,9 +504,21 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
         compute_intermediate_values(self)
 
         if use_omnireset_success:
-            self._near_goal_steps = near_goal_steps_before
-            is_success = self._compute_omnireset_alignment_success()
+            active_goal_idx = (self._successes % self.env_max_goals).long()
+            is_final_goal = active_goal_idx >= (self.env_max_goals - 1)
+            keypoint_near_goal = self._near_goal.clone()
+            self._keypoint_near_goal_for_active_goal = keypoint_near_goal
+            omnireset_near_goal = self._compute_omnireset_alignment_near_goal()
+            self._near_goal = torch.where(is_final_goal, omnireset_near_goal, keypoint_near_goal)
+            self._near_goal_steps = update_near_goal_steps(
+                near_goal=self._near_goal,
+                near_goal_steps=near_goal_steps_before,
+                force_consecutive=self.cfg.termination.force_consecutive_near_goal_steps,
+            )
+            self._is_success = self._near_goal_steps >= self.cfg.termination.success_steps
+            is_success = self._is_success
         else:
+            self._keypoint_near_goal_for_active_goal = self._near_goal.clone()
             is_success = self._is_success
         if self.cfg.furniturebench_leg.enable_retract:
             is_success = is_success & ~self.retract_phase
@@ -604,6 +632,40 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
         if str(self.cfg.furniturebench_leg.success_mode) == "omnireset_alignment":
             self.extras["omnireset_pos_align_error"] = self._omnireset_pos_align_error.mean()
             self.extras["omnireset_xy_rot_align_error"] = self._omnireset_xy_rot_align_error.mean()
+            self.extras["omnireset_pos_align_error_min"] = self._omnireset_pos_align_error.min()
+            self.extras["omnireset_pos_align_error_median"] = self._omnireset_pos_align_error.median()
+            self.extras["omnireset_xy_rot_align_error_min"] = self._omnireset_xy_rot_align_error.min()
+            self.extras["omnireset_xy_rot_align_error_median"] = self._omnireset_xy_rot_align_error.median()
+            self.extras["omnireset_position_aligned_ratio"] = self._omnireset_position_aligned.float().mean()
+            self.extras["omnireset_orientation_aligned_ratio"] = self._omnireset_orientation_aligned.float().mean()
+            self.extras["near_goal_ratio"] = self._near_goal.float().mean()
+            self.extras["near_goal_steps_max"] = self._near_goal_steps.max()
+            active_goal_idx = (self._successes % self.env_max_goals).long()
+            self.extras["active_goal_index_mean"] = active_goal_idx.float().mean()
+            self.extras["active_goal_index_max"] = active_goal_idx.max()
+            self.extras["active_final_goal_ratio"] = (
+                active_goal_idx >= (self.env_max_goals - 1)
+            ).float().mean()
+            self.extras["keypoint_near_goal_ratio"] = (
+                self._keypoint_near_goal_for_active_goal.float().mean()
+            )
+            self.extras["keypoint_near_goal_nonfinal_ratio"] = (
+                self._keypoint_near_goal_for_active_goal
+                & (active_goal_idx < (self.env_max_goals - 1))
+            ).float().mean()
+        else:
+            active_goal_idx = (self._successes % self.env_max_goals).long()
+            self.extras["active_goal_index_mean"] = active_goal_idx.float().mean()
+            self.extras["active_goal_index_max"] = active_goal_idx.max()
+            self.extras["near_goal_ratio"] = self._near_goal.float().mean()
+            self.extras["near_goal_steps_max"] = self._near_goal_steps.max()
+            self.extras["keypoint_near_goal_ratio"] = (
+                self._keypoint_near_goal_for_active_goal.float().mean()
+            )
+        self.extras["lifted_object_ratio"] = self._lifted_object.float().mean()
+        self.extras["keypoints_max_dist"] = self._keypoints_max_dist.mean()
+        self.extras["keypoints_max_dist_min"] = self._keypoints_max_dist.min()
+        self.extras["keypoints_max_dist_median"] = self._keypoints_max_dist.median()
         prev_ratio = (
             self._prev_episode_successes.float()
             / self.prev_episode_env_max_goals.clamp_min(1).float()

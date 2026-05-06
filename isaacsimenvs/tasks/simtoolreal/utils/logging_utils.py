@@ -26,6 +26,14 @@ def log_step_metrics(env) -> None:
 
     env.extras["episode_cumulative"] = env._reward_terms
     env.extras["episode_final"] = episode_final
+    env.extras["reward_mean"] = {
+        key: value.float().mean()
+        for key, value in env._reward_terms.items()
+    }
+    env.extras["done_ratio"] = {
+        name: value.float().mean()
+        for name, value in env._termination_reasons.items()
+    }
     env.extras["successes"] = env._prev_episode_successes.float()
     env.extras["current_success_tolerance"] = float(env._current_success_tolerance)
 
