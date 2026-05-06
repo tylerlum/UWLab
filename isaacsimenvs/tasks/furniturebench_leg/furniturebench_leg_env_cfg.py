@@ -9,6 +9,7 @@ from isaacsimenvs.tasks.simtoolreal.simtoolreal_env_cfg import SimToolRealEnvCfg
 
 VALID_GOAL_MODES = ("dense", "preInsertAndFinal", "finalGoalOnly")
 VALID_INIT_MODES = ("random_table", "upright_fixed", "omnireset_partial_assemblies")
+VALID_SUCCESS_MODES = ("omnireset_alignment", "simtoolreal_keypoints")
 
 
 @configclass
@@ -28,6 +29,14 @@ class FurnitureBenchLegCfg:
     dense_descend_steps: int = 10
     dense_screw_turns: float = 1.0
     force_lifted_for_keypoint_reward: bool = True
+    success_mode: str = "omnireset_alignment"
+    omnireset_position_success_threshold: float = 0.0025
+    omnireset_orientation_success_threshold: float = 0.025
+    enable_retract: bool = False
+    retract_reward_scale: float = 1.0
+    retract_distance_threshold: float = 0.1
+    retract_success_bonus: float = 1000.0
+    retract_success_tolerance: float = 0.005
     policy_frame_pos_offset_asset: tuple[float, float, float] = (0.0, 0.0, 0.0)
 
     random_start_xy_center: tuple[float, float] = (0.10, 0.08)
@@ -54,4 +63,5 @@ __all__ = [
     "FurnitureBenchLegCfg",
     "VALID_GOAL_MODES",
     "VALID_INIT_MODES",
+    "VALID_SUCCESS_MODES",
 ]

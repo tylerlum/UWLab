@@ -68,6 +68,14 @@ furniturebench_leg:
   dense_descend_steps: 10
   dense_screw_turns: 1.0
   force_lifted_for_keypoint_reward: true
+  success_mode: "omnireset_alignment"     # omnireset_alignment | simtoolreal_keypoints
+  omnireset_position_success_threshold: 0.0025
+  omnireset_orientation_success_threshold: 0.025
+  enable_retract: false
+  retract_reward_scale: 1.0
+  retract_distance_threshold: 0.1
+  retract_success_bonus: 1000.0
+  retract_success_tolerance: 0.005
   policy_frame_pos_offset_asset: [0.0, 0.0, 0.0]
   random_start_xy_center: [0.10, 0.08]
   random_start_xy_range: [0.025, 0.025]
@@ -132,7 +140,7 @@ reset:
 termination:
   episode_length: 600
   success_tolerance: 0.01
-  target_success_tolerance: 0.005
+  target_success_tolerance: 0.0025
   eval_success_tolerance: null
   success_steps: 10
   max_consecutive_successes: 1

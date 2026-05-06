@@ -7,15 +7,26 @@ from urllib.parse import urlparse
 from urllib.request import urlretrieve
 
 import torch
-from isaaclab.utils.math import quat_from_euler_xyz
+from isaaclab.utils.math import (
+    euler_xyz_from_quat,
+    quat_apply,
+    quat_from_euler_xyz,
+    subtract_frame_transforms,
+    wrap_to_pi,
+)
 
 from isaacsimenvs.tasks.simtoolreal.simtoolreal_env import SimToolRealEnv
 from isaacsimenvs.tasks.simtoolreal.utils.logging_utils import log_step_metrics
 from isaacsimenvs.tasks.simtoolreal.utils.obs_utils import build_observations, compute_intermediate_values
-from isaacsimenvs.tasks.simtoolreal.utils.reward_utils import compute_rewards
+from isaacsimenvs.tasks.simtoolreal.utils.reward_utils import compute_rewards, update_near_goal_steps
 from isaacsimenvs.tasks.simtoolreal.utils.termination_utils import update_tolerance_curriculum
 
-from .furniturebench_leg_env_cfg import FurnitureBenchLegEnvCfg, VALID_GOAL_MODES, VALID_INIT_MODES
+from .furniturebench_leg_env_cfg import (
+    FurnitureBenchLegEnvCfg,
+    VALID_GOAL_MODES,
+    VALID_INIT_MODES,
+    VALID_SUCCESS_MODES,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -36,10 +47,10 @@ R_USD_POLICY_LEG_WXYZ = (0.5, 0.5, 0.5, -0.5)
 LEG_OBJECT_SCALE = (1.56375, 0.75442625, 0.75442625)
 
 TABLE_HOLES = (
-    (0.0562, 0.0562, 0.0020),
-    (-0.0562, 0.0562, 0.0020),
-    (-0.0562, -0.0563, 0.0020),
-    (0.0562, -0.0563, 0.0020),
+    (0.05625, 0.05625, 0.0020),
+    (-0.05625, 0.05625, 0.0020),
+    (-0.05625, -0.05625, 0.0020),
+    (0.05625, -0.05625, 0.0020),
 )
 TABLE_ASSEMBLED_OFFSET = (0.05625, 0.05625, -0.009435)
 LEG_ASSEMBLED_OFFSET = (0.0, 0.0, -0.056658)
@@ -127,6 +138,11 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
     cfg: FurnitureBenchLegEnvCfg
 
     def __init__(self, cfg: FurnitureBenchLegEnvCfg, render_mode: str | None = None, **kwargs) -> None:
+        if str(cfg.furniturebench_leg.success_mode) not in VALID_SUCCESS_MODES:
+            raise ValueError(
+                f"success_mode must be one of {VALID_SUCCESS_MODES}, "
+                f"got {cfg.furniturebench_leg.success_mode!r}"
+            )
         self._configure_assets(cfg)
         if str(cfg.furniturebench_leg.physics_profile).lower() == "omnireset":
             self._apply_omnireset_physics_profile(cfg)
@@ -146,6 +162,23 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
         )
         self.prev_episode_env_max_goals = self.env_max_goals.clone()
 
+        self._table_assembled_offset_t = torch.tensor(
+            TABLE_ASSEMBLED_OFFSET, dtype=torch.float32, device=self.device
+        )
+        self._leg_assembled_offset_t = torch.tensor(
+            LEG_ASSEMBLED_OFFSET, dtype=torch.float32, device=self.device
+        )
+        self.retract_phase = torch.zeros(
+            self.num_envs, dtype=torch.bool, device=self.device
+        )
+        self.retract_succeeded = torch.zeros_like(self.retract_phase)
+        self._just_entered_retract = torch.zeros_like(self.retract_phase)
+        self._just_retracted = torch.zeros_like(self.retract_phase)
+        self._omnireset_pos_align_error = torch.zeros(self.num_envs, device=self.device)
+        self._omnireset_xy_rot_align_error = torch.zeros(self.num_envs, device=self.device)
+        self._omnireset_position_aligned = torch.zeros_like(self.retract_phase)
+        self._omnireset_orientation_aligned = torch.zeros_like(self.retract_phase)
+
         self._partial_pos_t: torch.Tensor | None = None
         self._partial_quat_t: torch.Tensor | None = None
         if str(cfg.furniturebench_leg.initialization_mode) == "omnireset_partial_assemblies":
@@ -155,6 +188,7 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
             "[FurnitureBenchLegEnv] "
             f"goal_mode={cfg.furniturebench_leg.goal_mode} "
             f"init={cfg.furniturebench_leg.initialization_mode} "
+            f"success_mode={cfg.furniturebench_leg.success_mode} "
             f"goals={self._leg_num_goals}",
             flush=True,
         )
@@ -372,6 +406,10 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
 
         self._successes[env_ids] = 0
         self._lifted_object[env_ids] = bool(self.cfg.furniturebench_leg.force_lifted_for_keypoint_reward)
+        self.retract_phase[env_ids] = False
+        self.retract_succeeded[env_ids] = False
+        self._just_entered_retract[env_ids] = False
+        self._just_retracted[env_ids] = False
         self._clear_goal_trackers(env_ids)
         self._write_goal_pose(env_ids)
 
@@ -390,25 +428,130 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
             torch.zeros(env_ids.numel(), 6, device=self.device), env_ids=env_ids
         )
 
+    def _compute_omnireset_alignment_success(self) -> torch.Tensor:
+        """Apply OmniReset's assembled-frame success check.
+
+        OmniReset compares the insertive and receptive assembled frames, then
+        ignores yaw.  This matters for threaded objects where final yaw is not
+        uniquely observable from insertion depth.
+        """
+
+        leg_cfg = self.cfg.furniturebench_leg
+        env_origins = self.scene.env_origins
+
+        object_pos = self.object.data.root_pos_w - env_origins
+        object_quat = self.object.data.root_quat_w
+        fixture_pos = self.fixture.data.root_pos_w - env_origins
+        fixture_quat = self.fixture.data.root_quat_w
+
+        insertive_pos = object_pos + quat_apply(
+            object_quat,
+            self._leg_assembled_offset_t.unsqueeze(0).expand(self.num_envs, -1),
+        )
+        receptive_pos = fixture_pos + quat_apply(
+            fixture_quat,
+            self._table_assembled_offset_t.unsqueeze(0).expand(self.num_envs, -1),
+        )
+        insertive_quat = object_quat
+        receptive_quat = fixture_quat
+
+        rel_pos, rel_quat = subtract_frame_transforms(
+            receptive_pos,
+            receptive_quat,
+            insertive_pos,
+            insertive_quat,
+        )
+        e_x, e_y, _ = euler_xyz_from_quat(rel_quat)
+        xy_rot_error = wrap_to_pi(e_x).abs() + wrap_to_pi(e_y).abs()
+        pos_error = torch.norm(rel_pos, dim=-1)
+
+        self._omnireset_pos_align_error = pos_error
+        self._omnireset_xy_rot_align_error = xy_rot_error
+        pos_threshold = max(
+            float(self._current_success_tolerance),
+            float(leg_cfg.omnireset_position_success_threshold),
+        )
+        ori_threshold = float(leg_cfg.omnireset_orientation_success_threshold)
+        self._omnireset_position_aligned = pos_error < pos_threshold
+        self._omnireset_orientation_aligned = xy_rot_error < ori_threshold
+
+        self._near_goal = self._omnireset_position_aligned & self._omnireset_orientation_aligned
+        self._near_goal_steps = update_near_goal_steps(
+            near_goal=self._near_goal,
+            near_goal_steps=self._near_goal_steps,
+            force_consecutive=self.cfg.termination.force_consecutive_near_goal_steps,
+        )
+        self._is_success = self._near_goal_steps >= self.cfg.termination.success_steps
+        return self._is_success
+
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         update_tolerance_curriculum(self)
+        use_omnireset_success = str(self.cfg.furniturebench_leg.success_mode) == "omnireset_alignment"
+        near_goal_steps_before = self._near_goal_steps.clone() if use_omnireset_success else None
         compute_intermediate_values(self)
 
-        is_success = self._is_success
+        if use_omnireset_success:
+            self._near_goal_steps = near_goal_steps_before
+            is_success = self._compute_omnireset_alignment_success()
+        else:
+            is_success = self._is_success
+        if self.cfg.furniturebench_leg.enable_retract:
+            is_success = is_success & ~self.retract_phase
+            self._is_success = is_success
+
         self._successes += is_success.long()
         self._successes.clamp_(max=self._leg_num_goals)
         success_ids = is_success.nonzero(as_tuple=False).squeeze(-1)
         if success_ids.numel() > 0:
             self.episode_length_buf[success_ids] = 0
-            next_goal_ids = success_ids[self._successes[success_ids] < self.env_max_goals[success_ids]]
+
+        self._just_entered_retract[:] = False
+        self._just_retracted[:] = False
+        if self.cfg.furniturebench_leg.enable_retract:
+            self._just_entered_retract = (
+                (self._successes >= self.env_max_goals) & ~self.retract_phase
+            )
+            self.retract_phase |= self._just_entered_retract
+
+            if str(self.cfg.furniturebench_leg.success_mode) == "omnireset_alignment":
+                object_at_goal = self._omnireset_pos_align_error <= float(
+                    self.cfg.furniturebench_leg.retract_success_tolerance
+                )
+            else:
+                object_at_goal = (
+                    self._keypoints_max_dist
+                    <= self.cfg.furniturebench_leg.retract_success_tolerance
+                    * self.cfg.reward.keypoint_scale
+                )
+            mean_fingertip_dist = self._curr_fingertip_distances.mean(dim=-1)
+            self._just_retracted = (
+                (mean_fingertip_dist > self.cfg.furniturebench_leg.retract_distance_threshold)
+                & self.retract_phase
+                & ~self.retract_succeeded
+                & object_at_goal
+            )
+            self.retract_succeeded |= self._just_retracted
+
+        if success_ids.numel() > 0:
+            if self.cfg.furniturebench_leg.enable_retract:
+                next_goal = is_success & ~self.retract_phase
+                next_goal_ids = next_goal.nonzero(as_tuple=False).squeeze(-1)
+            else:
+                next_goal_ids = success_ids[self._successes[success_ids] < self.env_max_goals[success_ids]]
             if next_goal_ids.numel() > 0:
                 self._clear_goal_trackers(next_goal_ids)
                 self._write_goal_pose(next_goal_ids)
 
         object_z_local = self.object.data.root_pos_w[:, 2] - self.scene.env_origins[:, 2]
         fall = object_z_local < 0.1
-        max_successes = self._successes >= self.env_max_goals
-        hand_far = self._curr_fingertip_distances.max(dim=-1).values > 1.5
+        if self.cfg.furniturebench_leg.enable_retract:
+            max_successes = self.retract_succeeded
+            hand_far = (
+                self._curr_fingertip_distances.max(dim=-1).values > 1.5
+            ) & ~self.retract_phase
+        else:
+            max_successes = self._successes >= self.env_max_goals
+            hand_far = self._curr_fingertip_distances.max(dim=-1).values > 1.5
         terminated = fall | max_successes | hand_far
         truncated = self.episode_length_buf >= self.max_episode_length
         self._termination_reasons = {
@@ -421,6 +564,35 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
 
     def _get_rewards(self) -> torch.Tensor:
         reward = compute_rewards(self)
+
+        if self.cfg.furniturebench_leg.enable_retract:
+            leg_cfg = self.cfg.furniturebench_leg
+            if str(leg_cfg.success_mode) == "omnireset_alignment":
+                object_at_goal = (
+                    self._omnireset_pos_align_error <= float(leg_cfg.retract_success_tolerance)
+                ).float()
+            else:
+                object_at_goal = (
+                    self._keypoints_max_dist
+                    <= leg_cfg.retract_success_tolerance * self.cfg.reward.keypoint_scale
+                ).float()
+            mean_fingertip_dist = self._curr_fingertip_distances.mean(dim=-1)
+            retract_rew = (
+                mean_fingertip_dist * leg_cfg.retract_reward_scale * object_at_goal
+                + self._just_retracted.float() * leg_cfg.retract_success_bonus
+            ) * self.retract_phase.float()
+
+            already_in_retract = self.retract_phase & ~self._just_entered_retract
+            action_penalty = (
+                self._reward_terms["kuka_actions_penalty"]
+                + self._reward_terms["hand_actions_penalty"]
+            )
+            reward = torch.where(already_in_retract, action_penalty + retract_rew, reward)
+            self._reward_terms["retract_rew"] = retract_rew
+            self._reward_terms["total_reward"] = reward
+            self.extras["retract_phase_ratio"] = self.retract_phase.float().mean()
+            self.extras["retract_success_ratio"] = self.retract_succeeded.float().mean()
+
         log_step_metrics(self)
         self._log_leg_metrics()
         return reward
@@ -430,6 +602,11 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
         episode_final = self.extras.setdefault("episode_final", {})
         episode_final["success_ratio"] = success_ratio
         episode_final["all_goals_hit"] = (self._successes >= self.env_max_goals).float()
+        if self.cfg.furniturebench_leg.enable_retract:
+            episode_final["retract_success"] = self.retract_succeeded.float()
+        if str(self.cfg.furniturebench_leg.success_mode) == "omnireset_alignment":
+            self.extras["omnireset_pos_align_error"] = self._omnireset_pos_align_error.mean()
+            self.extras["omnireset_xy_rot_align_error"] = self._omnireset_xy_rot_align_error.mean()
         prev_ratio = (
             self._prev_episode_successes.float()
             / self.prev_episode_env_max_goals.clamp_min(1).float()

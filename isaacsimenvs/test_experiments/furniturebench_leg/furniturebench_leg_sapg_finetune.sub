@@ -1,0 +1,178 @@
+#!/bin/bash
+#SBATCH -N 1
+#SBATCH -n 1
+#SBATCH --cpus-per-task=12
+#SBATCH --get-user-env
+#SBATCH --mem=256000
+#SBATCH -t 1-00:00:00
+#SBATCH --partition=move
+#SBATCH --gres=gpu:1
+#SBATCH -o /dev/null
+#SBATCH -e /dev/null
+
+# FurnitureBench square-leg SimToolReal finetune.
+#
+# Expected cluster setup:
+#   REPO_ROOT=/move/u/$USER/github_repos/UWLab
+#   PYTHON_BIN=$REPO_ROOT/env_uwlab/bin/python
+#
+# Override variables at submit time, for example:
+#   GPU_KIND=l40s NUM_ENVS=6144 EXPL_COEF_BLOCK_SIZE=1024 \
+#   GOAL_MODE=dense INIT_MODE=omnireset_partial_assemblies \
+#   sbatch --constraint=l40s isaacsimenvs/test_experiments/furniturebench_leg/furniturebench_leg_sapg_finetune.sub
+
+set -euo pipefail
+
+REPO_ROOT="${REPO_ROOT:-/move/u/${USER}/github_repos/UWLab}"
+PYTHON_BIN="${PYTHON_BIN:-${REPO_ROOT}/env_uwlab/bin/python}"
+CHECKPOINT="${CHECKPOINT:-${REPO_ROOT}/.pretrained_checkpoints/SimToolReal/pretrained_policy/model.pth}"
+
+TASK_ID="Isaacsimenvs-FurnitureBenchLeg-Direct-v0"
+AGENT_KEY="rl_games_sapg_cfg_entry_point"
+
+GPU_KIND="${GPU_KIND:-unknown_gpu}"
+RUN_TAG="${RUN_TAG:-fbleg_${GPU_KIND}_${GOAL_MODE:-finalGoalOnly}_${INIT_MODE:-omnireset_partial_assemblies}}"
+GOAL_MODE="${GOAL_MODE:-finalGoalOnly}"                         # finalGoalOnly | preInsertAndFinal | dense
+INIT_MODE="${INIT_MODE:-omnireset_partial_assemblies}"           # omnireset_partial_assemblies | upright_fixed | random_table
+SUCCESS_MODE="${SUCCESS_MODE:-omnireset_alignment}"              # omnireset_alignment | simtoolreal_keypoints
+ENABLE_RETRACT="${ENABLE_RETRACT:-false}"
+FORCE_CONSECUTIVE_NEAR_GOAL="${FORCE_CONSECUTIVE_NEAR_GOAL:-false}"
+
+# Keep num_envs / expl_coef_block_size = 6 when possible to match the pretrained
+# SAPG coefficient-conditioned tensors exactly. The code can resize in
+# checkpoint_load_mode=weights, but exact block count is cleaner for real runs.
+# Default is A5000/24 GB conservative; use 6144/1024 on L40S and 12288/2048
+# on RTX PRO 6000 after smoke checks.
+NUM_ENVS="${NUM_ENVS:-4096}"
+EXPL_COEF_BLOCK_SIZE="${EXPL_COEF_BLOCK_SIZE:-1024}"
+HORIZON_LENGTH="${HORIZON_LENGTH:-16}"
+SEQ_LENGTH="${SEQ_LENGTH:-16}"
+MINIBATCH_SIZE="${MINIBATCH_SIZE:-$((NUM_ENVS * HORIZON_LENGTH))}"
+MAX_ITERATIONS="${MAX_ITERATIONS:-1000000}"
+SEED="${SEED:-42}"
+
+# Default to insertion finetuning without random pushes/torques. Re-enable
+# later after the basic fixture/object physics and success curve look healthy.
+FORCE_SCALE="${FORCE_SCALE:-0.0}"
+TORQUE_SCALE="${TORQUE_SCALE:-0.0}"
+LIFTING_REW_SCALE="${LIFTING_REW_SCALE:-0.0}"
+LIFTING_BONUS="${LIFTING_BONUS:-0.0}"
+OBJECT_SCALE_NOISE_RANGE="${OBJECT_SCALE_NOISE_RANGE:-[1.0,1.0]}"
+
+CAPTURE_VIEWER_LEN="${CAPTURE_VIEWER_LEN:-600}"
+CAPTURE_VIEWER_INTERVAL="${CAPTURE_VIEWER_INTERVAL:-6000}"
+CAPTURE_VIEWER_ENV_ID="${CAPTURE_VIEWER_ENV_ID:-0}"
+CAPTURE_VIEWER_WANDB_KEY="${CAPTURE_VIEWER_WANDB_KEY:-interactive_viewer}"
+
+WANDB_PROJECT="${WANDB_PROJECT:-UWLab-SimToolReal-FurnitureBenchLeg}"
+WANDB_GROUP="${WANDB_GROUP:-2026-05-06_leg_finetune}"
+WANDB_ENTITY="${WANDB_ENTITY:-}"
+
+if [ ! -d "$REPO_ROOT" ]; then
+    echo "REPO_ROOT does not exist: $REPO_ROOT" >&2
+    exit 1
+fi
+if [ ! -x "$PYTHON_BIN" ]; then
+    echo "PYTHON_BIN does not exist or is not executable: $PYTHON_BIN" >&2
+    exit 1
+fi
+if [ ! -f "$CHECKPOINT" ]; then
+    echo "Checkpoint not found: $CHECKPOINT" >&2
+    exit 1
+fi
+
+DATETIME=$(date +"%Y-%m-%d_%H-%M-%S")
+EXPERIMENT_NAME="${RUN_TAG}_${DATETIME}"
+if [ -n "${SLURM_JOB_ID:-}" ]; then
+    scontrol update JobId="$SLURM_JOB_ID" JobName="$EXPERIMENT_NAME" || true
+fi
+
+HYDRA_RUN_DIR="${HYDRA_RUN_DIR:-${REPO_ROOT}/train_dir/${WANDB_PROJECT}/${WANDB_GROUP}/${EXPERIMENT_NAME}}"
+mkdir -p "$HYDRA_RUN_DIR"
+exec > "${HYDRA_RUN_DIR}/slurm.log" 2> "${HYDRA_RUN_DIR}/slurm.err"
+
+echo "Run dir:       $HYDRA_RUN_DIR"
+echo "Repo root:     $REPO_ROOT"
+echo "Python:        $PYTHON_BIN"
+echo "Checkpoint:    $CHECKPOINT"
+echo "Goal/init:     $GOAL_MODE / $INIT_MODE"
+echo "Success mode:  $SUCCESS_MODE"
+echo "Retract:       $ENABLE_RETRACT"
+echo "Num envs:      $NUM_ENVS"
+echo "Block size:    $EXPL_COEF_BLOCK_SIZE"
+echo ""
+echo "=== Initial GPU State ==="
+nvidia-smi || true
+echo ""
+
+GPU_LOG="${HYDRA_RUN_DIR}/gpu_usage.log"
+(
+    while true; do
+        echo "=== $(date '+%Y-%m-%d %H:%M:%S') ===" >> "$GPU_LOG"
+        nvidia-smi --query-gpu=memory.used,memory.total,memory.free,utilization.gpu,temperature.gpu \
+            --format=csv,noheader >> "$GPU_LOG" 2>&1 || true
+        sleep 30
+    done
+) &
+GPU_MONITOR_PID=$!
+
+RAM_LOG="${HYDRA_RUN_DIR}/ram_usage.log"
+(
+    while true; do
+        echo "=== $(date '+%Y-%m-%d %H:%M:%S') ===" >> "$RAM_LOG"
+        free -m | head -2 >> "$RAM_LOG" 2>&1 || true
+        ps -eo pid,rss,comm --sort=-rss --no-headers 2>/dev/null | head -5 >> "$RAM_LOG" || true
+        if [ -n "${SLURM_JOB_ID:-}" ] && command -v sstat >/dev/null 2>&1; then
+            sstat -j "$SLURM_JOB_ID" --format=MaxRSS,AveRSS --noheader 2>/dev/null >> "$RAM_LOG" || true
+        fi
+        sleep 30
+    done
+) &
+RAM_MONITOR_PID=$!
+
+trap "kill $GPU_MONITOR_PID $RAM_MONITOR_PID 2>/dev/null" EXIT
+
+cd "$REPO_ROOT"
+export OMNI_KIT_ACCEPT_EULA=YES
+export OMNI_KIT_CACHE_PATH="${OMNI_KIT_CACHE_PATH:-/tmp/${USER}_ov_cache_${SLURM_JOB_ID:-manual}}"
+export PYTHONNOUSERSITE=1
+export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
+mkdir -p "$OMNI_KIT_CACHE_PATH"
+
+WANDB_ARGS=(--wandb_activate --wandb_project "$WANDB_PROJECT" --wandb_group "$WANDB_GROUP" --wandb_name "$EXPERIMENT_NAME")
+if [ -n "$WANDB_ENTITY" ]; then
+    WANDB_ARGS+=(--wandb_entity "$WANDB_ENTITY")
+fi
+
+"$PYTHON_BIN" -u isaacsimenvs/train.py \
+    --task "$TASK_ID" \
+    --agent "$AGENT_KEY" \
+    --checkpoint "$CHECKPOINT" \
+    --checkpoint_load_mode weights \
+    --headless \
+    --capture_viewer \
+    --capture_viewer_len "$CAPTURE_VIEWER_LEN" \
+    --capture_viewer_interval "$CAPTURE_VIEWER_INTERVAL" \
+    --capture_viewer_env_id "$CAPTURE_VIEWER_ENV_ID" \
+    --capture_viewer_wandb_key "$CAPTURE_VIEWER_WANDB_KEY" \
+    "${WANDB_ARGS[@]}" \
+    env.scene.num_envs="$NUM_ENVS" \
+    env.furniturebench_leg.goal_mode="$GOAL_MODE" \
+    env.furniturebench_leg.initialization_mode="$INIT_MODE" \
+    env.furniturebench_leg.success_mode="$SUCCESS_MODE" \
+    env.furniturebench_leg.enable_retract="$ENABLE_RETRACT" \
+    env.termination.force_consecutive_near_goal_steps="$FORCE_CONSECUTIVE_NEAR_GOAL" \
+    env.domain_randomization.force_scale="$FORCE_SCALE" \
+    env.domain_randomization.torque_scale="$TORQUE_SCALE" \
+    "env.domain_randomization.object_scale_noise_multiplier_range=$OBJECT_SCALE_NOISE_RANGE" \
+    env.reward.lifting_rew_scale="$LIFTING_REW_SCALE" \
+    env.reward.lifting_bonus="$LIFTING_BONUS" \
+    agent.params.config.max_epochs="$MAX_ITERATIONS" \
+    agent.params.config.horizon_length="$HORIZON_LENGTH" \
+    agent.params.config.seq_length="$SEQ_LENGTH" \
+    agent.params.config.minibatch_size="$MINIBATCH_SIZE" \
+    agent.params.config.central_value_config.minibatch_size="$MINIBATCH_SIZE" \
+    agent.params.config.expl_coef_block_size="$EXPL_COEF_BLOCK_SIZE" \
+    agent.params.config.name="0_${EXPERIMENT_NAME}" \
+    agent.params.seed="$SEED" \
+    hydra.run.dir="$HYDRA_RUN_DIR"
