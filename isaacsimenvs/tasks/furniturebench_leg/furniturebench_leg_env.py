@@ -525,13 +525,13 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
         use_omnireset_success = str(self.cfg.furniturebench_leg.success_mode) == "omnireset_alignment"
         near_goal_steps_before = self._near_goal_steps.clone() if use_omnireset_success else None
         compute_intermediate_values(self)
+        keypoint_near_goal = self._near_goal.clone()
+        self._keypoint_near_goal_for_active_goal = keypoint_near_goal
+        omnireset_near_goal = self._compute_omnireset_alignment_near_goal()
 
         if use_omnireset_success:
             active_goal_idx = (self._successes % self.env_max_goals).long()
             uses_omnireset_success = self._leg_goal_uses_omnireset_success_t[active_goal_idx]
-            keypoint_near_goal = self._near_goal.clone()
-            self._keypoint_near_goal_for_active_goal = keypoint_near_goal
-            omnireset_near_goal = self._compute_omnireset_alignment_near_goal()
             self._near_goal = torch.where(
                 uses_omnireset_success, omnireset_near_goal, keypoint_near_goal
             )
@@ -543,7 +543,6 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
             self._is_success = self._near_goal_steps >= self.cfg.termination.success_steps
             is_success = self._is_success
         else:
-            self._keypoint_near_goal_for_active_goal = self._near_goal.clone()
             is_success = self._is_success
         if self.cfg.furniturebench_leg.enable_retract:
             is_success = is_success & ~self.retract_phase
@@ -654,38 +653,28 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
         episode_final["all_goals_hit"] = (self._successes >= self.env_max_goals).float()
         if self.cfg.furniturebench_leg.enable_retract:
             episode_final["retract_success"] = self.retract_succeeded.float()
-        if str(self.cfg.furniturebench_leg.success_mode) == "omnireset_alignment":
-            self.extras["omnireset_pos_align_error"] = self._omnireset_pos_align_error.mean()
-            self.extras["omnireset_xy_rot_align_error"] = self._omnireset_xy_rot_align_error.mean()
-            self.extras["omnireset_pos_align_error_min"] = self._omnireset_pos_align_error.min()
-            self.extras["omnireset_pos_align_error_median"] = self._omnireset_pos_align_error.median()
-            self.extras["omnireset_xy_rot_align_error_min"] = self._omnireset_xy_rot_align_error.min()
-            self.extras["omnireset_xy_rot_align_error_median"] = self._omnireset_xy_rot_align_error.median()
-            self.extras["omnireset_position_aligned_ratio"] = self._omnireset_position_aligned.float().mean()
-            self.extras["omnireset_orientation_aligned_ratio"] = self._omnireset_orientation_aligned.float().mean()
-            self.extras["near_goal_ratio"] = self._near_goal.float().mean()
-            self.extras["near_goal_steps_max"] = self._near_goal_steps.max()
-            active_goal_idx = (self._successes % self.env_max_goals).long()
-            uses_omnireset_success = self._leg_goal_uses_omnireset_success_t[active_goal_idx]
-            self.extras["active_goal_index_mean"] = active_goal_idx.float().mean()
-            self.extras["active_goal_index_max"] = active_goal_idx.max()
-            self.extras["active_final_goal_ratio"] = uses_omnireset_success.float().mean()
-            self.extras["keypoint_near_goal_ratio"] = (
-                self._keypoint_near_goal_for_active_goal.float().mean()
-            )
-            self.extras["keypoint_near_goal_nonfinal_ratio"] = (
-                self._keypoint_near_goal_for_active_goal
-                & (active_goal_idx < (self.env_max_goals - 1))
-            ).float().mean()
-        else:
-            active_goal_idx = (self._successes % self.env_max_goals).long()
-            self.extras["active_goal_index_mean"] = active_goal_idx.float().mean()
-            self.extras["active_goal_index_max"] = active_goal_idx.max()
-            self.extras["near_goal_ratio"] = self._near_goal.float().mean()
-            self.extras["near_goal_steps_max"] = self._near_goal_steps.max()
-            self.extras["keypoint_near_goal_ratio"] = (
-                self._keypoint_near_goal_for_active_goal.float().mean()
-            )
+        self.extras["omnireset_pos_align_error"] = self._omnireset_pos_align_error.mean()
+        self.extras["omnireset_xy_rot_align_error"] = self._omnireset_xy_rot_align_error.mean()
+        self.extras["omnireset_pos_align_error_min"] = self._omnireset_pos_align_error.min()
+        self.extras["omnireset_pos_align_error_median"] = self._omnireset_pos_align_error.median()
+        self.extras["omnireset_xy_rot_align_error_min"] = self._omnireset_xy_rot_align_error.min()
+        self.extras["omnireset_xy_rot_align_error_median"] = self._omnireset_xy_rot_align_error.median()
+        self.extras["omnireset_position_aligned_ratio"] = self._omnireset_position_aligned.float().mean()
+        self.extras["omnireset_orientation_aligned_ratio"] = self._omnireset_orientation_aligned.float().mean()
+        self.extras["near_goal_ratio"] = self._near_goal.float().mean()
+        self.extras["near_goal_steps_max"] = self._near_goal_steps.max()
+        active_goal_idx = (self._successes % self.env_max_goals).long()
+        uses_omnireset_success = self._leg_goal_uses_omnireset_success_t[active_goal_idx]
+        self.extras["active_goal_index_mean"] = active_goal_idx.float().mean()
+        self.extras["active_goal_index_max"] = active_goal_idx.max()
+        self.extras["active_final_goal_ratio"] = uses_omnireset_success.float().mean()
+        self.extras["keypoint_near_goal_ratio"] = (
+            self._keypoint_near_goal_for_active_goal.float().mean()
+        )
+        self.extras["keypoint_near_goal_nonfinal_ratio"] = (
+            self._keypoint_near_goal_for_active_goal
+            & (active_goal_idx < (self.env_max_goals - 1))
+        ).float().mean()
         self.extras["lifted_object_ratio"] = self._lifted_object.float().mean()
         self.extras["keypoints_max_dist"] = self._keypoints_max_dist.mean()
         self.extras["keypoints_max_dist_min"] = self._keypoints_max_dist.min()
