@@ -64,6 +64,8 @@ FURNITUREBENCH_TABLE_ASSEMBLED_OFFSET = np.array(
 FURNITUREBENCH_LEG_ASSEMBLED_OFFSET = np.array(
     [0.0, 0.0, -0.056658], dtype=np.float32
 )
+FURNITUREBENCH_LEG_PREINSERT_Z_OFFSET_FROM_FINAL = 0.015427
+FURNITUREBENCH_LEG_PREINSERT_YAW_OFFSET_DEG = 20.73494
 
 # Graspable cuboidal handle bbox in policy frame, encoded by SimToolReal as
 # metric dimensions multiplied by 25.
@@ -153,7 +155,21 @@ def _build_parser() -> argparse.ArgumentParser:
         help="FurnitureBench leg goal sequence to expose to the policy or teleport driver.",
     )
     parser.add_argument("--leg_hover_height", type=float, default=0.12)
-    parser.add_argument("--leg_preinsert_height", type=float, default=0.070)
+    parser.add_argument(
+        "--leg_preinsert_height",
+        type=float,
+        default=None,
+        help=(
+            "Pre-insert leg root height above the approximate top-hole point. "
+            "If unset, use --leg_preinsert_final_z_offset above the final assembled pose."
+        ),
+    )
+    parser.add_argument(
+        "--leg_preinsert_final_z_offset",
+        type=float,
+        default=FURNITUREBENCH_LEG_PREINSERT_Z_OFFSET_FROM_FINAL,
+        help="Pre-insert leg root Z offset above the final assembled root pose.",
+    )
     parser.add_argument("--leg_insert_height", type=float, default=0.038)
     parser.add_argument(
         "--leg_use_omnireset_final_height",
@@ -163,7 +179,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--leg_preinsert_yaw_offset_deg",
         type=float,
-        default=0.0,
+        default=FURNITUREBENCH_LEG_PREINSERT_YAW_OFFSET_DEG,
         help="Raw upright-leg +Z yaw offset for the pre-insert pose; positive is CCW from above.",
     )
     parser.add_argument(
@@ -181,8 +197,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--leg_descend_steps", type=int, default=4)
     parser.add_argument(
         "--leg_spin_mode",
-        choices=("after_insert", "helical"),
-        default="after_insert",
+        choices=("interpolate", "after_insert", "helical"),
+        default="interpolate",
     )
     parser.add_argument(
         "--leg_physics_profile",
@@ -365,6 +381,11 @@ def _make_furniturebench_leg_trajectory(args) -> tuple[np.ndarray, list[np.ndarr
     else:
         final_z = hole[2] + float(args.leg_insert_height)
 
+    if args.leg_preinsert_height is None:
+        preinsert_z = final_z + float(args.leg_preinsert_final_z_offset)
+    else:
+        preinsert_z = hole[2] + float(args.leg_preinsert_height)
+
     preinsert_yaw = np.deg2rad(float(args.leg_preinsert_yaw_offset_deg))
     final_yaw = np.deg2rad(float(args.leg_final_yaw_offset_deg))
     hover_pose = _upright_leg_policy_pose(
@@ -372,7 +393,7 @@ def _make_furniturebench_leg_trajectory(args) -> tuple[np.ndarray, list[np.ndarr
         final_yaw,
     )
     preinsert_pose = _upright_leg_policy_pose(
-        np.array([hole[0], hole[1], hole[2] + args.leg_preinsert_height], dtype=np.float32),
+        np.array([hole[0], hole[1], preinsert_z], dtype=np.float32),
         preinsert_yaw,
     )
     final_pose = _upright_leg_policy_pose(
@@ -397,14 +418,19 @@ def _make_furniturebench_leg_trajectory(args) -> tuple[np.ndarray, list[np.ndarr
     goals = [hover_pose, preinsert_pose]
 
     has_spin = int(args.leg_spin_steps) > 0 and abs(float(args.leg_spin_turns)) > 1.0e-8
+    if args.leg_spin_mode == "interpolate":
+        for pose in _densify_pose_sequence([preinsert_pose, final_pose], max(1, int(args.leg_descend_steps)))[1:]:
+            goals.append(pose)
+        return start_pose, goals, fixture_root
+
     if has_spin and args.leg_spin_mode == "helical":
         # Positive leg_spin_turns means clockwise from above: raw asset yaw
         # decreases about +Z, equivalent to positive policy-local +X.
         total_spin = 2.0 * np.pi * float(args.leg_spin_turns)
         spin_steps = int(args.leg_spin_steps)
         heights = np.linspace(
-            float(args.leg_preinsert_height),
-            float(final_z - hole[2]),
+            float(preinsert_z),
+            float(final_z),
             spin_steps + 1,
             dtype=np.float32,
         )[1:]
@@ -413,7 +439,7 @@ def _make_furniturebench_leg_trajectory(args) -> tuple[np.ndarray, list[np.ndarr
             yaw = preinsert_yaw - theta
             goals.append(
                 _upright_leg_policy_pose(
-                    np.array([hole[0], hole[1], hole[2] + height], dtype=np.float32),
+                    np.array([hole[0], hole[1], height], dtype=np.float32),
                     yaw,
                 )
             )
@@ -421,15 +447,15 @@ def _make_furniturebench_leg_trajectory(args) -> tuple[np.ndarray, list[np.ndarr
 
     descend_steps = max(1, int(args.leg_descend_steps))
     descend_heights = np.linspace(
-        float(args.leg_preinsert_height),
-        float(final_z - hole[2]),
+        float(preinsert_z),
+        float(final_z),
         descend_steps + 1,
         dtype=np.float32,
     )[1:]
     for height in descend_heights:
         goals.append(
             _upright_leg_policy_pose(
-                np.array([hole[0], hole[1], hole[2] + height], dtype=np.float32),
+                np.array([hole[0], hole[1], height], dtype=np.float32),
                 preinsert_yaw,
             )
         )
