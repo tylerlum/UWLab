@@ -137,6 +137,20 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_false",
         help="Hide the goal pose object from viewer/video while keeping it available for observations.",
     )
+    parser.add_argument(
+        "--goal_viz_color",
+        nargs=3,
+        type=float,
+        default=(0.0, 1.0, 0.15),
+        metavar=("R", "G", "B"),
+        help="RGB color for the goal pose ghost when it is visible.",
+    )
+    parser.add_argument(
+        "--goal_viz_opacity",
+        type=float,
+        default=0.22,
+        help="Goal pose ghost opacity when visible; 0 is transparent, 1 is opaque.",
+    )
     parser.add_argument("--keypoint_tolerance", type=float, default=0.015)
     parser.add_argument("--success_steps", type=int, default=10)
     parser.add_argument(
@@ -976,12 +990,28 @@ def _create_record_camera(inner):
     return camera
 
 
-def _set_goal_viz_visibility(visible: bool) -> None:
+def _set_goal_viz_visibility(args, visible: bool) -> None:
     from isaaclab.sim.utils import find_matching_prim_paths, get_current_stage
-    from pxr import UsdGeom
+    from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
 
     stage = get_current_stage()
     prim_paths = find_matching_prim_paths("/World/envs/env_.*/GoalViz")
+    material_path = "/World/Looks/SimToolRealGoalVizGhost"
+    opacity = float(np.clip(float(args.goal_viz_opacity), 0.0, 1.0))
+    color = np.clip(np.asarray(args.goal_viz_color, dtype=np.float32), 0.0, 1.0)
+
+    material = UsdShade.Material.Define(stage, material_path)
+    shader = UsdShade.Shader.Define(stage, f"{material_path}/PreviewSurface")
+    shader.CreateIdAttr("UsdPreviewSurface")
+    shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(
+        Gf.Vec3f(float(color[0]), float(color[1]), float(color[2]))
+    )
+    shader.CreateInput("opacity", Sdf.ValueTypeNames.Float).Set(opacity)
+    shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.45)
+    material.CreateSurfaceOutput(UsdShade.Tokens.universalRenderContext).ConnectToSource(
+        shader.ConnectableAPI(), "surface"
+    )
+
     for prim_path in prim_paths:
         prim = stage.GetPrimAtPath(prim_path)
         if not prim.IsValid():
@@ -991,8 +1021,17 @@ def _set_goal_viz_visibility(visible: bool) -> None:
             imageable.MakeVisible()
         else:
             imageable.MakeInvisible()
+        for child in Usd.PrimRange(prim):
+            if not child.IsA(UsdGeom.Gprim):
+                continue
+            gprim = UsdGeom.Gprim(child)
+            gprim.CreateDisplayColorAttr([Gf.Vec3f(float(color[0]), float(color[1]), float(color[2]))])
+            gprim.CreateDisplayOpacityAttr([opacity])
+            binding_api = UsdShade.MaterialBindingAPI.Apply(child)
+            binding_api.Bind(material)
     print(
-        f"[rollout] goal_viz_visible={visible} prims={len(prim_paths)}",
+        f"[rollout] goal_viz_visible={visible} prims={len(prim_paths)} "
+        f"color={color.tolist()} opacity={opacity:.3f}",
         flush=True,
     )
 
@@ -1120,7 +1159,7 @@ def main() -> int:
     obs, _ = env.reset()
     obs, _, _, _, _ = env.step(torch.zeros((cfg.scene.num_envs, cfg.action_space), device=inner.device))
     _write_goal(inner, args, goals[0])
-    _set_goal_viz_visibility(bool(args.goal_viz_visible))
+    _set_goal_viz_visibility(args, bool(args.goal_viz_visible))
     obs = inner._get_observations()
 
     if args.robot_control_mode == "hold_current":
@@ -1185,7 +1224,7 @@ def main() -> int:
         cfg.reset.fixed_start_pose = pose_xyzw_to_wxyz(new_start_asset)
         obs, _ = env.reset()
         _write_goal(inner, args, goals[0])
-        _set_goal_viz_visibility(bool(args.goal_viz_visible))
+        _set_goal_viz_visibility(args, bool(args.goal_viz_visible))
         obs = inner._get_observations()
         player.player.init_rnn()
         current_goal_idx = 0
@@ -1394,6 +1433,8 @@ def main() -> int:
         teleport_pose_source=args.teleport_pose_source,
         teleport_loop=np.asarray([bool(args.teleport_loop)], dtype=np.bool_),
         goal_viz_visible=np.asarray([bool(args.goal_viz_visible)], dtype=np.bool_),
+        goal_viz_color=np.asarray(args.goal_viz_color, dtype=np.float32),
+        goal_viz_opacity=np.asarray([float(args.goal_viz_opacity)], dtype=np.float32),
     )
     print(f"[rollout] wrote {npz_path}", flush=True)
 
