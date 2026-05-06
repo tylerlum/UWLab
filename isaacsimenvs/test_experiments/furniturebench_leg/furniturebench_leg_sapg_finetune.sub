@@ -61,6 +61,10 @@ TARGET_SUCCESS_TOLERANCE="${TARGET_SUCCESS_TOLERANCE:-0.01}"
 OMNIRESET_POSITION_SUCCESS_THRESHOLD="${OMNIRESET_POSITION_SUCCESS_THRESHOLD:-0.02}"
 OMNIRESET_ORIENTATION_SUCCESS_THRESHOLD="${OMNIRESET_ORIENTATION_SUCCESS_THRESHOLD:-0.10}"
 SUCCESS_STEPS="${SUCCESS_STEPS:-10}"
+DENSE_DESCEND_STEPS="${DENSE_DESCEND_STEPS:-10}"
+DENSE_SCREW_TURNS="${DENSE_SCREW_TURNS:-1.0}"
+SCREW_METRIC_MIN_TURNS_FOR_INSERT="${SCREW_METRIC_MIN_TURNS_FOR_INSERT:-0.5}"
+SCREW_METRIC_HOLE_RADIUS="${SCREW_METRIC_HOLE_RADIUS:-0.02}"
 
 # Keep num_envs / expl_coef_block_size = 6 when possible to match the pretrained
 # SAPG coefficient-conditioned tensors exactly. The code can resize in
@@ -95,6 +99,8 @@ CAPTURE_VIEWER_LEN="${CAPTURE_VIEWER_LEN:-600}"
 CAPTURE_VIEWER_INTERVAL="${CAPTURE_VIEWER_INTERVAL:-6000}"
 CAPTURE_VIEWER_ENV_ID="${CAPTURE_VIEWER_ENV_ID:-0}"
 CAPTURE_VIEWER_WANDB_KEY="${CAPTURE_VIEWER_WANDB_KEY:-interactive_viewer}"
+CAPTURE_VIEWER_FULL_EPISODES="${CAPTURE_VIEWER_FULL_EPISODES:-false}"
+CAPTURE_VIEWER_EPISODES="${CAPTURE_VIEWER_EPISODES:-1}"
 
 WANDB_PROJECT="${WANDB_PROJECT:-UWLab-SimToolReal-FurnitureBenchLeg}"
 WANDB_GROUP="${WANDB_GROUP:-2026-05-06_leg_finetune}"
@@ -137,7 +143,10 @@ echo "Force lifted:  $FORCE_LIFTED_FOR_KEYPOINT_REWARD"
 echo "Hover height:  $HOVER_HEIGHT"
 echo "Fixture/goal:  $FIXTURE_XY_OFFSET / $GOAL_XY_OFFSET"
 echo "OmniReset tol: $OMNIRESET_POSITION_SUCCESS_THRESHOLD m / $OMNIRESET_ORIENTATION_SUCCESS_THRESHOLD rad"
+echo "Dense screw:   $DENSE_DESCEND_STEPS steps / $DENSE_SCREW_TURNS turns"
+echo "Screw metric:  min_turns=$SCREW_METRIC_MIN_TURNS_FOR_INSERT hole_radius=$SCREW_METRIC_HOLE_RADIUS"
 echo "Capture video: $CAPTURE_VIDEO"
+echo "Viewer:        len=$CAPTURE_VIEWER_LEN interval=$CAPTURE_VIEWER_INTERVAL full=$CAPTURE_VIEWER_FULL_EPISODES episodes=$CAPTURE_VIEWER_EPISODES"
 echo "Num envs:      $NUM_ENVS"
 echo "Block size:    $EXPL_COEF_BLOCK_SIZE"
 echo ""
@@ -196,6 +205,14 @@ if [ "$CAPTURE_VIDEO" = "true" ] || [ "$CAPTURE_VIDEO" = "1" ]; then
     )
 fi
 
+VIEWER_ARGS=()
+if [ "$CAPTURE_VIEWER_FULL_EPISODES" = "true" ] || [ "$CAPTURE_VIEWER_FULL_EPISODES" = "1" ]; then
+    VIEWER_ARGS=(
+        --capture_viewer_full_episodes
+        --capture_viewer_episodes "$CAPTURE_VIEWER_EPISODES"
+    )
+fi
+
 "$PYTHON_BIN" -u isaacsimenvs/train.py \
     --task "$TASK_ID" \
     --agent "$AGENT_KEY" \
@@ -207,6 +224,7 @@ fi
     --capture_viewer_interval "$CAPTURE_VIEWER_INTERVAL" \
     --capture_viewer_env_id "$CAPTURE_VIEWER_ENV_ID" \
     --capture_viewer_wandb_key "$CAPTURE_VIEWER_WANDB_KEY" \
+    "${VIEWER_ARGS[@]}" \
     "${VIDEO_ARGS[@]}" \
     "${WANDB_ARGS[@]}" \
     env.scene.num_envs="$NUM_ENVS" \
@@ -218,6 +236,10 @@ fi
     env.furniturebench_leg.hover_height="$HOVER_HEIGHT" \
     env.furniturebench_leg.omnireset_position_success_threshold="$OMNIRESET_POSITION_SUCCESS_THRESHOLD" \
     env.furniturebench_leg.omnireset_orientation_success_threshold="$OMNIRESET_ORIENTATION_SUCCESS_THRESHOLD" \
+    env.furniturebench_leg.dense_descend_steps="$DENSE_DESCEND_STEPS" \
+    env.furniturebench_leg.dense_screw_turns="$DENSE_SCREW_TURNS" \
+    env.furniturebench_leg.screw_metric_min_turns_for_insert="$SCREW_METRIC_MIN_TURNS_FOR_INSERT" \
+    env.furniturebench_leg.screw_metric_hole_radius="$SCREW_METRIC_HOLE_RADIUS" \
     "env.furniturebench_leg.fixture_xy_offset=$FIXTURE_XY_OFFSET" \
     "env.furniturebench_leg.goal_xy_offset=$GOAL_XY_OFFSET" \
     "env.furniturebench_leg.random_start_xy_center=$RANDOM_START_XY_CENTER" \

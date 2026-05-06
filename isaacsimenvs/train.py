@@ -83,6 +83,12 @@ def main() -> None:
     parser.add_argument("--capture_viewer_env_id", type=int, default=0)
     parser.add_argument("--capture_viewer_wandb_key", default="interactive_viewer")
     parser.add_argument(
+        "--capture_viewer_full_episodes",
+        action="store_true",
+        help="Capture pose-viewer windows on env reset boundaries and finalize after complete episode(s).",
+    )
+    parser.add_argument("--capture_viewer_episodes", type=int, default=1)
+    parser.add_argument(
         "--capture_viewer_github_raw_base",
         default="",
         help="GitHub raw base URL used by the browser to fetch robot URDF meshes.",
@@ -220,6 +226,8 @@ def main() -> None:
                 wandb_key=args_cli.capture_viewer_wandb_key,
                 github_raw_base=args_cli.capture_viewer_github_raw_base,
                 url_check=args_cli.capture_viewer_url_check,
+                full_episodes=args_cli.capture_viewer_full_episodes,
+                episodes_per_capture=args_cli.capture_viewer_episodes,
             )
 
         # Clip bounds live in the rl_games YAML (params.env.*). Default to

@@ -181,6 +181,18 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
         self._omnireset_position_aligned = torch.zeros_like(self.retract_phase)
         self._omnireset_orientation_aligned = torch.zeros_like(self.retract_phase)
         self._keypoint_near_goal_for_active_goal = torch.zeros_like(self.retract_phase)
+        self._leg_prev_yaw = torch.zeros(self.num_envs, device=self.device)
+        self._leg_unwrapped_yaw = torch.zeros(self.num_envs, device=self.device)
+        self._leg_entered_hole = torch.zeros_like(self.retract_phase)
+        self._leg_hole_entry_yaw = torch.zeros(self.num_envs, device=self.device)
+        self._leg_hole_entry_z = torch.zeros(self.num_envs, device=self.device)
+        self._leg_screw_cw_turns = torch.zeros(self.num_envs, device=self.device)
+        self._leg_screw_max_cw_turns = torch.zeros(self.num_envs, device=self.device)
+        self._leg_screw_depth = torch.zeros(self.num_envs, device=self.device)
+        self._leg_screw_max_depth = torch.zeros(self.num_envs, device=self.device)
+        self._leg_screw_radial_error = torch.zeros(self.num_envs, device=self.device)
+        self._leg_screw_phase_error = torch.zeros(self.num_envs, device=self.device)
+        self._leg_screw_pushthrough = torch.zeros_like(self.retract_phase)
 
         self._partial_pos_t: torch.Tensor | None = None
         self._partial_quat_t: torch.Tensor | None = None
@@ -300,11 +312,8 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
         pos = pos.to(self.device, dtype=torch.float32).reshape(3)
         return torch.cat([pos, _quat_yaw(self.device, yaw_rad)], dim=0)
 
-    def _build_goal_sequence_asset(self) -> torch.Tensor:
+    def _screw_reference(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         leg_cfg = self.cfg.furniturebench_leg
-        if leg_cfg.goal_mode not in VALID_GOAL_MODES:
-            raise ValueError(f"goal_mode must be one of {VALID_GOAL_MODES}, got {leg_cfg.goal_mode!r}")
-
         hole = self._hole_pos_local()
         if bool(leg_cfg.use_omnireset_final_height):
             final_z = (
@@ -314,12 +323,27 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
             )
         else:
             final_z = hole[2] + float(leg_cfg.insert_height)
+        final_z = torch.as_tensor(final_z, device=self.device, dtype=torch.float32)
         pre_z = final_z + float(leg_cfg.preinsert_final_z_offset)
+        pre_yaw = torch.deg2rad(
+            torch.tensor(float(leg_cfg.preinsert_yaw_offset_deg), device=self.device, dtype=torch.float32)
+        )
+        final_yaw = torch.deg2rad(
+            torch.tensor(float(leg_cfg.final_yaw_offset_deg), device=self.device, dtype=torch.float32)
+        )
+        total_yaw_delta = final_yaw - pre_yaw - 2.0 * torch.pi * float(leg_cfg.dense_screw_turns)
+        return hole, pre_z, final_z, pre_yaw, total_yaw_delta
 
-        pre_yaw = torch.deg2rad(torch.tensor(float(leg_cfg.preinsert_yaw_offset_deg), device=self.device)).item()
+    def _build_goal_sequence_asset(self) -> torch.Tensor:
+        leg_cfg = self.cfg.furniturebench_leg
+        if leg_cfg.goal_mode not in VALID_GOAL_MODES:
+            raise ValueError(f"goal_mode must be one of {VALID_GOAL_MODES}, got {leg_cfg.goal_mode!r}")
+
+        hole, pre_z, final_z, pre_yaw_t, total_yaw_delta_t = self._screw_reference()
+        pre_yaw = float(pre_yaw_t.detach().cpu().item())
         final_yaw = torch.deg2rad(torch.tensor(float(leg_cfg.final_yaw_offset_deg), device=self.device)).item()
-        final_pos = torch.stack([hole[0], hole[1], torch.as_tensor(final_z, device=self.device)])
-        pre_pos = torch.stack([hole[0], hole[1], torch.as_tensor(pre_z, device=self.device)])
+        final_pos = torch.stack([hole[0], hole[1], final_z])
+        pre_pos = torch.stack([hole[0], hole[1], pre_z])
         final = self._asset_pose(final_pos, final_yaw)
         pre = self._asset_pose(pre_pos, pre_yaw)
         hover = self._asset_pose(
@@ -338,7 +362,7 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
         else:
             goals = [hover, pre]
             steps = max(1, int(leg_cfg.dense_descend_steps))
-            total_yaw_delta = final_yaw - pre_yaw - 2.0 * torch.pi * float(leg_cfg.dense_screw_turns)
+            total_yaw_delta = float(total_yaw_delta_t.detach().cpu().item())
             for i in range(1, steps + 1):
                 frac = float(i) / float(steps)
                 z = pre_z * (1.0 - frac) + final_z * frac
@@ -456,8 +480,86 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
         self.retract_succeeded[env_ids] = False
         self._just_entered_retract[env_ids] = False
         self._just_retracted[env_ids] = False
+        self._reset_screw_metrics(env_ids, start_local)
         self._clear_goal_trackers(env_ids)
         self._write_goal_pose(env_ids)
+
+    def _reset_screw_metrics(self, env_ids: torch.Tensor, start_local: torch.Tensor) -> None:
+        _, _, yaw = euler_xyz_from_quat(start_local[:, 3:7])
+        self._leg_prev_yaw[env_ids] = yaw
+        self._leg_unwrapped_yaw[env_ids] = yaw
+        self._leg_entered_hole[env_ids] = False
+        self._leg_hole_entry_yaw[env_ids] = yaw
+        self._leg_hole_entry_z[env_ids] = start_local[:, 2]
+        self._leg_screw_cw_turns[env_ids] = 0.0
+        self._leg_screw_max_cw_turns[env_ids] = 0.0
+        self._leg_screw_depth[env_ids] = 0.0
+        self._leg_screw_max_depth[env_ids] = 0.0
+        self._leg_screw_radial_error[env_ids] = 0.0
+        self._leg_screw_phase_error[env_ids] = torch.pi
+        self._leg_screw_pushthrough[env_ids] = False
+
+    def _update_screw_metrics(self) -> None:
+        leg_cfg = self.cfg.furniturebench_leg
+        env_origins = self.scene.env_origins
+        object_pos = self.object.data.root_pos_w - env_origins
+        _, _, yaw = euler_xyz_from_quat(self.object.data.root_quat_w)
+
+        yaw_delta = wrap_to_pi(yaw - self._leg_prev_yaw)
+        self._leg_unwrapped_yaw += yaw_delta
+        self._leg_prev_yaw = yaw
+
+        hole, pre_z, final_z, pre_yaw, total_yaw_delta = self._screw_reference()
+        radial_error = torch.norm(object_pos[:, 0:2] - hole[0:2].unsqueeze(0), dim=-1)
+        self._leg_screw_radial_error = radial_error
+
+        entry = (
+            (radial_error <= float(leg_cfg.screw_metric_hole_radius))
+            & (object_pos[:, 2] <= pre_z + float(leg_cfg.screw_metric_entry_z_margin))
+        )
+        new_entry = entry & ~self._leg_entered_hole
+        self._leg_entered_hole |= entry
+        self._leg_hole_entry_yaw = torch.where(new_entry, self._leg_unwrapped_yaw, self._leg_hole_entry_yaw)
+        self._leg_hole_entry_z = torch.where(new_entry, object_pos[:, 2], self._leg_hole_entry_z)
+
+        cw_turns = (self._leg_hole_entry_yaw - self._leg_unwrapped_yaw) / (2.0 * torch.pi)
+        depth = self._leg_hole_entry_z - object_pos[:, 2]
+        cw_turns = torch.where(self._leg_entered_hole, torch.clamp(cw_turns, min=0.0), torch.zeros_like(cw_turns))
+        depth = torch.where(self._leg_entered_hole, torch.clamp(depth, min=0.0), torch.zeros_like(depth))
+        self._leg_screw_cw_turns = cw_turns
+        self._leg_screw_depth = depth
+        self._leg_screw_max_cw_turns = torch.maximum(self._leg_screw_max_cw_turns, cw_turns)
+        self._leg_screw_max_depth = torch.maximum(self._leg_screw_max_depth, depth)
+
+        denom = torch.clamp(pre_z - final_z, min=1.0e-6)
+        frac = torch.clamp((pre_z - object_pos[:, 2]) / denom, 0.0, 1.0)
+        expected_yaw = pre_yaw + total_yaw_delta * frac
+        self._leg_screw_phase_error = torch.abs(wrap_to_pi(yaw - expected_yaw))
+
+        deep = (
+            self._leg_entered_hole
+            & (radial_error <= float(leg_cfg.screw_metric_hole_radius))
+            & (object_pos[:, 2] <= final_z + float(leg_cfg.screw_metric_final_depth_margin))
+        )
+        self._leg_screw_pushthrough = (
+            deep
+            & (self._leg_screw_max_cw_turns < float(leg_cfg.screw_metric_min_turns_for_insert))
+        )
+
+    def _screw_insert_like(self) -> tuple[torch.Tensor, torch.Tensor]:
+        leg_cfg = self.cfg.furniturebench_leg
+        _, pre_z, final_z, _, _ = self._screw_reference()
+        required_depth = torch.clamp(
+            pre_z - final_z - float(leg_cfg.screw_metric_final_depth_margin),
+            min=0.0,
+        )
+        insert_like = (
+            self._leg_entered_hole
+            & (self._leg_screw_max_cw_turns >= float(leg_cfg.screw_metric_min_turns_for_insert))
+            & (self._leg_screw_max_depth >= required_depth)
+            & ~self._leg_screw_pushthrough
+        )
+        return insert_like, required_depth
 
     def _clear_goal_trackers(self, env_ids: torch.Tensor) -> None:
         self._closest_keypoint_max_dist[env_ids] = -1.0
@@ -647,10 +749,16 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
         return reward
 
     def _log_leg_metrics(self) -> None:
+        self._update_screw_metrics()
+        screw_insert_like, screw_required_depth = self._screw_insert_like()
         success_ratio = self._successes.float() / self.env_max_goals.clamp_min(1).float()
         episode_final = self.extras.setdefault("episode_final", {})
         episode_final["success_ratio"] = success_ratio
         episode_final["all_goals_hit"] = (self._successes >= self.env_max_goals).float()
+        episode_final["screw_cw_turns_after_entry"] = self._leg_screw_max_cw_turns
+        episode_final["screw_depth_after_entry_m"] = self._leg_screw_max_depth
+        episode_final["screw_pushthrough"] = self._leg_screw_pushthrough.float()
+        episode_final["screw_insert_like"] = screw_insert_like.float()
         if self.cfg.furniturebench_leg.enable_retract:
             episode_final["retract_success"] = self.retract_succeeded.float()
         self.extras["omnireset_pos_align_error"] = self._omnireset_pos_align_error.mean()
@@ -679,6 +787,18 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
         self.extras["keypoints_max_dist"] = self._keypoints_max_dist.mean()
         self.extras["keypoints_max_dist_min"] = self._keypoints_max_dist.min()
         self.extras["keypoints_max_dist_median"] = self._keypoints_max_dist.median()
+        self.extras["screw_entry_ratio"] = self._leg_entered_hole.float().mean()
+        self.extras["screw_cw_turns_after_entry"] = self._leg_screw_cw_turns.mean()
+        self.extras["screw_cw_turns_after_entry_max"] = self._leg_screw_max_cw_turns.max()
+        self.extras["screw_depth_after_entry_m"] = self._leg_screw_depth.mean()
+        self.extras["screw_depth_after_entry_m_max"] = self._leg_screw_max_depth.max()
+        self.extras["screw_radial_error_m"] = self._leg_screw_radial_error.mean()
+        self.extras["screw_radial_error_m_min"] = self._leg_screw_radial_error.min()
+        self.extras["screw_phase_error_rad"] = self._leg_screw_phase_error.mean()
+        self.extras["screw_phase_error_rad_min"] = self._leg_screw_phase_error.min()
+        self.extras["screw_pushthrough_ratio"] = self._leg_screw_pushthrough.float().mean()
+        self.extras["screw_insert_like_ratio"] = screw_insert_like.float().mean()
+        self.extras["screw_required_depth_m"] = screw_required_depth
         prev_ratio = (
             self._prev_episode_successes.float()
             / self.prev_episode_env_max_goals.clamp_min(1).float()

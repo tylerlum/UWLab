@@ -54,8 +54,10 @@ COMMON_EXPORTS=(
     "VIDEO_INTERVAL=6000"
     "VIDEO_CAPTURE_FRAMES=600"
     "VIDEO_FPS=30"
-    "CAPTURE_VIEWER_LEN=600"
-    "CAPTURE_VIEWER_INTERVAL=6000"
+    "CAPTURE_VIEWER_LEN=7200"
+    "CAPTURE_VIEWER_INTERVAL=12000"
+    "CAPTURE_VIEWER_FULL_EPISODES=true"
+    "CAPTURE_VIEWER_EPISODES=1"
 )
 
 run_sbatch() {
@@ -160,8 +162,10 @@ env_uwlab/bin/python -u isaacsimenvs/train.py \\
   --checkpoint_load_mode weights \\
   --headless \\
   --capture_viewer \\
-  --capture_viewer_len 600 \\
+  --capture_viewer_len 1200 \\
   --capture_viewer_interval 3000 \\
+  --capture_viewer_full_episodes \\
+  --capture_viewer_episodes 2 \\
   --wandb_activate \\
   --wandb_project UWLab-SimToolReal-FurnitureBenchLeg \\
   --wandb_group "$WANDB_GROUP" \\

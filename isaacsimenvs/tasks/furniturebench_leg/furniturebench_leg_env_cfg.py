@@ -32,6 +32,10 @@ class FurnitureBenchLegCfg:
     success_mode: str = "omnireset_alignment"
     omnireset_position_success_threshold: float = 0.0025
     omnireset_orientation_success_threshold: float = 0.025
+    screw_metric_hole_radius: float = 0.02
+    screw_metric_entry_z_margin: float = 0.005
+    screw_metric_final_depth_margin: float = 0.005
+    screw_metric_min_turns_for_insert: float = 0.5
     enable_retract: bool = False
     retract_reward_scale: float = 1.0
     retract_distance_threshold: float = 0.1

@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# Launch a FurnitureBench square-leg success-metric/contact ablation matrix.
+# Launch a focused FurnitureBench square-leg screw-diagnostics matrix.
+#
+# This replaces loose success-only sweeps with runs that log screw-specific
+# metrics and full-episode pose-viewer HTMLs.
 #
 # Default mode is a dry run:
-#   bash isaacsimenvs/test_experiments/furniturebench_leg/launch_furniturebench_leg_success_metric_ablation.sh
+#   bash isaacsimenvs/test_experiments/furniturebench_leg/launch_furniturebench_leg_screw_diagnostics.sh
 #
 # Submit from a Slurm login node:
-#   DRY_RUN=0 bash isaacsimenvs/test_experiments/furniturebench_leg/launch_furniturebench_leg_success_metric_ablation.sh
+#   DRY_RUN=0 bash isaacsimenvs/test_experiments/furniturebench_leg/launch_furniturebench_leg_screw_diagnostics.sh
 
 set -euo pipefail
 
@@ -16,7 +19,7 @@ SBATCH_SCRIPT="${SBATCH_SCRIPT:-${SCRIPT_DIR}/furniturebench_leg_sapg_finetune.s
 DRY_RUN="${DRY_RUN:-1}"
 SUBMIT_CLUSTER="${SUBMIT_CLUSTER:-1}"
 
-WANDB_GROUP="${WANDB_GROUP:-2026-05-06_leg_success_metric_ablation01}"
+WANDB_GROUP="${WANDB_GROUP:-2026-05-06_leg_screw_diagnostics01}"
 MAX_ITERATIONS="${MAX_ITERATIONS:-1000000}"
 HORIZON_LENGTH="${HORIZON_LENGTH:-16}"
 SEQ_LENGTH="${SEQ_LENGTH:-16}"
@@ -43,6 +46,10 @@ COMMON_EXPORTS=(
     "ENABLE_RETRACT=false"
     "FORCE_CONSECUTIVE_NEAR_GOAL=true"
     "SUCCESS_STEPS=10"
+    "DENSE_DESCEND_STEPS=10"
+    "DENSE_SCREW_TURNS=1.0"
+    "SCREW_METRIC_MIN_TURNS_FOR_INSERT=0.5"
+    "SCREW_METRIC_HOLE_RADIUS=0.02"
     "CAPTURE_VIDEO=false"
     "CAPTURE_VIEWER_LEN=7200"
     "CAPTURE_VIEWER_INTERVAL=12000"
@@ -86,10 +93,11 @@ submit_job() {
     local success_mode="$6"
     local fixture_xy="$7"
     local success_tolerance="$8"
-    local omni_pos_tol="$9"
-    local omni_ori_tol="${10}"
-    local seed="${11}"
-    local label_suffix="${12}"
+    local target_success_tolerance="$9"
+    local omni_pos_tol="${10}"
+    local omni_ori_tol="${11}"
+    local seed="${12}"
+    local label_suffix="${13}"
     local run_tag="fbleg_${gpu_kind}_${label_suffix}_${goal_mode}_${success_mode}_seed${seed}"
     local minibatch_size
     minibatch_size=$((num_envs * HORIZON_LENGTH))
@@ -102,7 +110,7 @@ submit_job() {
         "FIXTURE_XY_OFFSET=$fixture_xy" \
         "GOAL_XY_OFFSET=[0.0,0.0]" \
         "SUCCESS_TOLERANCE=$success_tolerance" \
-        "TARGET_SUCCESS_TOLERANCE=$success_tolerance" \
+        "TARGET_SUCCESS_TOLERANCE=$target_success_tolerance" \
         "OMNIRESET_POSITION_SUCCESS_THRESHOLD=$omni_pos_tol" \
         "OMNIRESET_ORIENTATION_SUCCESS_THRESHOLD=$omni_ori_tol" \
         "NUM_ENVS=$num_envs" \
@@ -128,21 +136,23 @@ echo "Slurm script: $SBATCH_SCRIPT"
 echo "W&B group:    $WANDB_GROUP"
 echo "Dry run:      $DRY_RUN"
 
-# Positive controls: threaded fixture is shifted away, goals stay at the
-# canonical hole target, and success is the strict SimToolReal keypoint metric.
-submit_job "a5000" "$A5000_TARGET" 1536 256 "highHover" "simtoolreal_keypoints" "[-0.25,0.0]" 0.01 0.03 0.15 60 "ctrl_fixture_away"
-submit_job "a5000" "$A5000_TARGET" 1536 256 "highHoverAndFinal" "simtoolreal_keypoints" "[-0.25,0.0]" 0.01 0.03 0.15 61 "ctrl_fixture_away"
-submit_job "a5000" "$A5000_TARGET" 1536 256 "dense" "simtoolreal_keypoints" "[-0.25,0.0]" 0.01 0.03 0.15 62 "ctrl_fixture_away"
+# Positive controls with the threaded fixture shifted away. These should prove
+# that the reward/observation/action path still learns when contact is not the
+# bottleneck.
+submit_job "a5000" "$A5000_TARGET" 1536 256 "highHover" "simtoolreal_keypoints" "[-0.25,0.0]" 0.01 0.01 0.01 0.05 70 "ctrl_fixture_away"
+submit_job "a5000" "$A5000_TARGET" 1536 256 "highHoverAndFinal" "simtoolreal_keypoints" "[-0.25,0.0]" 0.01 0.01 0.01 0.05 71 "ctrl_fixture_away"
+submit_job "a5000" "$A5000_TARGET" 1536 256 "dense" "simtoolreal_keypoints" "[-0.25,0.0]" 0.01 0.01 0.01 0.05 72 "ctrl_fixture_away"
 
-# Real fixture, relaxed OmniReset final alignment. Non-final goals still use
-# strict 0.01 SimToolReal keypoint success, so dense waypoints cannot be skipped
-# by the old loose 0.075 tolerance.
-submit_job "l40s" "$L40S_TARGET" 3072 512 "highHoverAndFinal" "omnireset_alignment" "[0.0,0.0]" 0.01 0.03 0.15 63 "real_fixture_relaxed_omni"
-submit_job "l40s" "$L40S_TARGET" 3072 512 "dense" "omnireset_alignment" "[0.0,0.0]" 0.01 0.03 0.15 64 "real_fixture_relaxed_omni"
-submit_job "l40s" "$L40S_TARGET" 3072 512 "preInsertAndFinal" "omnireset_alignment" "[0.0,0.0]" 0.01 0.03 0.15 65 "real_fixture_relaxed_omni"
+# Real fixture, dense helical goals. Medium OmniReset final alignment should
+# be permissive enough to learn; strict OmniReset checks whether that remains
+# compatible with the threaded contact.
+submit_job "l40s" "$L40S_TARGET" 3072 512 "dense" "omnireset_alignment" "[0.0,0.0]" 0.01 0.01 0.01 0.05 73 "real_fixture_omni_medium"
+submit_job "l40s" "$L40S_TARGET" 3072 512 "dense" "omnireset_alignment" "[0.0,0.0]" 0.005 0.005 0.0025 0.025 74 "real_fixture_omni_strict"
 
-# Real fixture, strict SimToolReal keypoint success. OmniReset alignment
-# diagnostics are still logged for apples-to-apples comparison.
-submit_job "rtx6000" "$RTX6000_TARGET" 3072 512 "highHoverAndFinal" "simtoolreal_keypoints" "[0.0,0.0]" 0.01 0.03 0.15 66 "real_fixture_keypoint"
-submit_job "rtx6000" "$RTX6000_TARGET" 3072 512 "dense" "simtoolreal_keypoints" "[0.0,0.0]" 0.01 0.03 0.15 67 "real_fixture_keypoint"
-submit_job "rtx6000" "$RTX6000_TARGET" 3072 512 "preInsertAndFinal" "simtoolreal_keypoints" "[0.0,0.0]" 0.01 0.03 0.15 68 "real_fixture_keypoint"
+# Real fixture, dense keypoint success. The tighter keypoint run tests whether
+# apparent success was caused by a loose final tolerance. The preInsert run is a
+# negative/control case: it may hit goals, but should show poor screw metrics if
+# dense helical waypoints are truly necessary.
+submit_job "rtx6000" "$RTX6000_TARGET" 3072 512 "dense" "simtoolreal_keypoints" "[0.0,0.0]" 0.01 0.01 0.01 0.05 75 "real_fixture_keypoint_tol010"
+submit_job "rtx6000" "$RTX6000_TARGET" 3072 512 "dense" "simtoolreal_keypoints" "[0.0,0.0]" 0.005 0.005 0.0025 0.025 76 "real_fixture_keypoint_tol005"
+submit_job "rtx6000" "$RTX6000_TARGET" 3072 512 "preInsertAndFinal" "simtoolreal_keypoints" "[0.0,0.0]" 0.005 0.005 0.0025 0.025 77 "real_fixture_no_dense_control"

@@ -71,6 +71,10 @@ furniturebench_leg:
   success_mode: "omnireset_alignment"     # omnireset_alignment | simtoolreal_keypoints
   omnireset_position_success_threshold: 0.0025
   omnireset_orientation_success_threshold: 0.025
+  screw_metric_hole_radius: 0.02
+  screw_metric_entry_z_margin: 0.005
+  screw_metric_final_depth_margin: 0.005
+  screw_metric_min_turns_for_insert: 0.5
   enable_retract: false
   retract_reward_scale: 1.0
   retract_distance_threshold: 0.1

@@ -425,6 +425,8 @@ class SimToolRealPoseViewerWrapper(gym.Wrapper):
         wandb_key: str = "interactive_viewer",
         github_raw_base: str | None = None,
         url_check: str = "skip",
+        full_episodes: bool = False,
+        episodes_per_capture: int = 1,
     ) -> None:
         super().__init__(env)
         if capture_len <= 0:
@@ -443,6 +445,8 @@ class SimToolRealPoseViewerWrapper(gym.Wrapper):
         self.wandb_key = wandb_key
         self.github_raw_base = github_raw_base
         self.url_check = url_check
+        self.full_episodes = bool(full_episodes)
+        self.episodes_per_capture = max(1, int(episodes_per_capture))
         self._object_urdf_text = object_urdf_text_for_env(inner, self.env_id)
         self._table_urdf_text = table_urdf_text_for_env(inner, self.env_id)
         self._fixture_urdf_text = fixture_urdf_text_for_env(inner, self.env_id)
@@ -450,11 +454,14 @@ class SimToolRealPoseViewerWrapper(gym.Wrapper):
         self._step = 0
         self._capture_index = 0
         self._frames: list[dict[str, Any]] | None = []
+        self._episodes_in_capture = 0
+        self._waiting_for_episode_boundary = False
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
         print(
             "[pose_viewer] enabled: "
             f"env_id={self.env_id} len={self.capture_len} interval={self.capture_interval} "
+            f"full_episodes={self.full_episodes} episodes_per_capture={self.episodes_per_capture} "
             f"output_dir={self.output_dir}",
             flush=True,
         )
@@ -462,16 +469,45 @@ class SimToolRealPoseViewerWrapper(gym.Wrapper):
     def step(self, action):
         result = self.env.step(action)
         self._step += 1
+        env_done = self._env_id_done(result)
 
-        if self._frames is None and self.capture_interval > 0 and self._step % self.capture_interval == 0:
+        if self.full_episodes:
+            if self._frames is None and self.capture_interval > 0 and self._step % self.capture_interval == 0:
+                self._waiting_for_episode_boundary = True
+            if self._waiting_for_episode_boundary and env_done:
+                self._frames = []
+                self._episodes_in_capture = 0
+                self._waiting_for_episode_boundary = False
+        elif self._frames is None and self.capture_interval > 0 and self._step % self.capture_interval == 0:
             self._frames = []
 
         if self._frames is not None:
             self._frames.append(capture_pose_viewer_frame(self.env.unwrapped, self.env_id))
-            if len(self._frames) >= self.capture_len:
-                self._finalize_capture()
+            if self.full_episodes and env_done:
+                self._episodes_in_capture += 1
+                if self._episodes_in_capture >= self.episodes_per_capture:
+                    self._finalize_capture()
+            elif len(self._frames) >= self.capture_len:
+                partial = self.full_episodes and self._episodes_in_capture < self.episodes_per_capture
+                self._finalize_capture(partial=partial)
 
         return result
+
+    def _env_id_done(self, step_result) -> bool:
+        if not isinstance(step_result, tuple) or len(step_result) < 4:
+            return False
+        terminated = step_result[2]
+        truncated = step_result[3]
+
+        def _value_at(value) -> bool:
+            if hasattr(value, "detach"):
+                return bool(value[self.env_id].detach().cpu().item())
+            try:
+                return bool(value[self.env_id])
+            except Exception:
+                return bool(value)
+
+        return _value_at(terminated) or _value_at(truncated)
 
     def close(self) -> None:
         if self._frames:
@@ -501,6 +537,7 @@ class SimToolRealPoseViewerWrapper(gym.Wrapper):
 
         self._capture_index += 1
         self._frames = None
+        self._episodes_in_capture = 0
 
     def _log_wandb(self, html_text: str) -> None:
         try:
