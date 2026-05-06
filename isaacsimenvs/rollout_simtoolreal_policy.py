@@ -143,7 +143,17 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--teleport_write_every_step",
         action="store_true",
-        help="Interpolate and write the object pose every policy step instead of only at waypoint intervals.",
+        help="Write the current waypoint pose every policy step instead of only at waypoint intervals.",
+    )
+    parser.add_argument(
+        "--teleport_interpolate_between_waypoints",
+        action="store_true",
+        help="When writing every step, interpolate between adjacent waypoints instead of holding each waypoint.",
+    )
+    parser.add_argument(
+        "--teleport_skip_start_pose",
+        action="store_true",
+        help="Teleport through goal waypoints only, skipping the scripted initial object pose.",
     )
     parser.add_argument("--teleport_keep_velocity", action="store_true")
     parser.add_argument("--ignore_dones", action="store_true")
@@ -272,9 +282,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "--leg_random_start_roll_pitch_range_deg",
         nargs=2,
         type=float,
-        default=(0.0, 0.0),
+        default=(10.0, 10.0),
         metavar=("ROLL", "PITCH"),
-        help="Uniform half-widths for randomized roll/pitch in degrees; keep zero for upright starts.",
+        help="Uniform half-widths for randomized roll/pitch in degrees; set 0 0 for upright starts.",
     )
     return parser
 
@@ -868,8 +878,13 @@ def main() -> int:
     teleport_poses: list[np.ndarray] = []
     teleport_interval_steps = max(1, int(round(float(args.teleport_interval_s) / float(inner.step_dt))))
     if args.object_drive_mode == "teleport_trajectory":
+        teleport_source_poses = (
+            [*goals]
+            if bool(args.teleport_skip_start_pose)
+            else [np.asarray(start_pose, dtype=np.float32), *goals]
+        )
         teleport_poses = _densify_pose_sequence_xyzw(
-            [np.asarray(start_pose, dtype=np.float32), *goals],
+            teleport_source_poses,
             int(args.teleport_waypoints_per_segment),
         )
         _write_object_pose(
@@ -920,7 +935,9 @@ def main() -> int:
             f"[rollout] teleport trajectory poses={len(teleport_poses)} "
             f"interval_steps={teleport_interval_steps} "
             f"interval_s={teleport_interval_steps * inner.step_dt:.3f} "
-            f"write_every_step={bool(args.teleport_write_every_step)}",
+            f"write_every_step={bool(args.teleport_write_every_step)} "
+            f"interpolate={bool(args.teleport_interpolate_between_waypoints)} "
+            f"skip_start={bool(args.teleport_skip_start_pose)}",
             flush=True,
         )
 
@@ -928,9 +945,13 @@ def main() -> int:
         active_teleport_pose = None
         if teleport_poses:
             if args.teleport_write_every_step:
-                teleport_goal_idx, active_teleport_pose = _teleport_pose_for_step(
-                    teleport_poses, step, teleport_interval_steps
-                )
+                if args.teleport_interpolate_between_waypoints:
+                    teleport_goal_idx, active_teleport_pose = _teleport_pose_for_step(
+                        teleport_poses, step, teleport_interval_steps
+                    )
+                else:
+                    teleport_goal_idx = min(step // teleport_interval_steps, len(teleport_poses) - 1)
+                    active_teleport_pose = teleport_poses[teleport_goal_idx]
                 _write_object_pose(
                     inner,
                     args,
