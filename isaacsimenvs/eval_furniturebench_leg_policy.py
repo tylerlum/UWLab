@@ -41,6 +41,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--goal_mode", default="preInsertAndFinal")
     parser.add_argument("--initialization_mode", default="omnireset_partial_assemblies")
     parser.add_argument("--success_mode", default="omnireset_alignment")
+    parser.add_argument("--force_lifted_for_keypoint_reward", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--fixture_xy_offset", type=float, nargs=2, default=(0.0, 0.0))
+    parser.add_argument("--goal_xy_offset", type=float, nargs=2, default=(0.0, 0.0))
+    parser.add_argument("--hover_height", type=float, default=0.4)
+    parser.add_argument("--dense_descend_steps", type=int, default=10)
+    parser.add_argument("--dense_screw_turns", type=float, default=1.0)
     parser.add_argument("--success_tolerance", type=float, default=0.01)
     parser.add_argument("--target_success_tolerance", type=float, default=0.0025)
     parser.add_argument("--eval_success_tolerance", type=float, default=None)
@@ -90,12 +96,14 @@ def _make_cfg(args):
     leg.initialization_mode = str(args.initialization_mode)
     leg.success_mode = str(args.success_mode)
     leg.physics_profile = "omnireset"
-    leg.hover_height = 0.4
+    leg.hover_height = float(args.hover_height)
+    leg.dense_descend_steps = int(args.dense_descend_steps)
+    leg.dense_screw_turns = float(args.dense_screw_turns)
     leg.omnireset_position_success_threshold = float(args.omnireset_position_success_threshold)
     leg.omnireset_orientation_success_threshold = float(args.omnireset_orientation_success_threshold)
-    leg.force_lifted_for_keypoint_reward = False
-    leg.fixture_xy_offset = (0.0, 0.0)
-    leg.goal_xy_offset = (0.0, 0.0)
+    leg.force_lifted_for_keypoint_reward = bool(args.force_lifted_for_keypoint_reward)
+    leg.fixture_xy_offset = tuple(float(x) for x in args.fixture_xy_offset)
+    leg.goal_xy_offset = tuple(float(x) for x in args.goal_xy_offset)
 
     cfg.reward.fixed_size = FURNITUREBENCH_LEG_FIXED_SIZE_M
     cfg.reward.fixed_size_keypoint_reward = True
@@ -387,6 +395,12 @@ def main() -> int:
             step_dt=np.asarray([float(inner.step_dt)], dtype=np.float32),
         )
 
+        min_pos_error = float(min(omnireset_pos_error_log) if omnireset_pos_error_log else 0.0)
+        min_xy_rot_error = float(min(omnireset_xy_rot_error_log) if omnireset_xy_rot_error_log else 0.0)
+        min_keypoints_max_dist = float(min(keypoints_max_dist_log) if keypoints_max_dist_log else 0.0)
+        min_screw_radial_error = float(min(screw_radial_error_log) if screw_radial_error_log else 0.0)
+        min_screw_phase_error = float(min(screw_phase_error_log) if screw_phase_error_log else 0.0)
+
         summary = {
             "episode": int(episode),
             "label": "success" if success else "fail",
@@ -397,11 +411,16 @@ def main() -> int:
             "successes": int(max_successes_seen),
             "env_max_goals": int(env_max_goals),
             "termination_reasons": _termination_reasons(inner),
-            "omnireset_pos_align_error": _scalar_from_tensor(getattr(inner, "_omnireset_pos_align_error", None)),
-            "omnireset_xy_rot_align_error": _scalar_from_tensor(
+            "omnireset_pos_align_error_end": _scalar_from_tensor(getattr(inner, "_omnireset_pos_align_error", None)),
+            "omnireset_xy_rot_align_error_end": _scalar_from_tensor(
                 getattr(inner, "_omnireset_xy_rot_align_error", None)
             ),
-            "keypoints_max_dist": _scalar_from_tensor(getattr(inner, "_keypoints_max_dist", None)),
+            "keypoints_max_dist_end": _scalar_from_tensor(getattr(inner, "_keypoints_max_dist", None)),
+            "omnireset_pos_align_error_min": min_pos_error,
+            "omnireset_xy_rot_align_error_min": min_xy_rot_error,
+            "keypoints_max_dist_min": min_keypoints_max_dist,
+            "screw_radial_error_min": min_screw_radial_error,
+            "screw_phase_error_min": min_screw_phase_error,
             "screw_max_cw_turns_after_entry": float(max(screw_max_cw_turns_log) if screw_max_cw_turns_log else 0.0),
             "screw_max_depth_after_entry_m": float(max(screw_max_depth_log) if screw_max_depth_log else 0.0),
             "screw_pushthrough": bool(any(screw_pushthrough_log)),
@@ -416,8 +435,9 @@ def main() -> int:
             f"episode={episode:02d} label={summary['label']} "
             f"done_step={summary['done_step']} goals={summary['successes']}/{summary['env_max_goals']} "
             f"hits={goal_hit_steps} "
-            f"pos_err={summary['omnireset_pos_align_error']:.4f} "
-            f"ori_err={summary['omnireset_xy_rot_align_error']:.4f} "
+            f"min_pos_err={summary['omnireset_pos_align_error_min']:.4f} "
+            f"min_ori_err={summary['omnireset_xy_rot_align_error_min']:.4f} "
+            f"min_kp={summary['keypoints_max_dist_min']:.4f} "
             f"screw_turns={summary['screw_max_cw_turns_after_entry']:.3f} "
             f"screw_depth={summary['screw_max_depth_after_entry_m']:.4f} "
             f"pushthrough={summary['screw_pushthrough']} "
