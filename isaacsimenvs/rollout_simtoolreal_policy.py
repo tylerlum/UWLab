@@ -99,6 +99,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--object_name", default="claw_hammer")
     parser.add_argument("--task_name", default="swing_down")
     parser.add_argument("--max_steps", type=int, default=600)
+    parser.add_argument(
+        "--episode_length_s",
+        type=float,
+        default=None,
+        help="Override environment episode length in seconds. Useful for repeated viewer rollouts.",
+    )
     parser.add_argument("--num_envs", type=int, default=1)
     parser.add_argument("--rl_device", default="cuda")
     parser.add_argument(
@@ -282,6 +288,22 @@ def _build_parser() -> argparse.ArgumentParser:
         "--leg_randomize_start",
         action="store_true",
         help="Sample the FurnitureBench leg initial pose instead of using the fixed scripted start.",
+    )
+    parser.add_argument(
+        "--leg_start_from_omnireset_partial_assemblies",
+        action="store_true",
+        help="Sample the FurnitureBench leg initial pose from OmniReset partial_assemblies.pt.",
+    )
+    parser.add_argument(
+        "--leg_start_partial_index",
+        type=int,
+        default=-1,
+        help="Stored OmniReset partial assembly index to use; negative samples one with --seed.",
+    )
+    parser.add_argument(
+        "--leg_resample_partial_start_on_reset",
+        action="store_true",
+        help="After script success or env done, reset and sample a new OmniReset partial assembly start.",
     )
     parser.add_argument(
         "--leg_random_start_xy_center",
@@ -477,10 +499,7 @@ def _omnireset_partial_assembly_dataset_path(args) -> str:
     )
 
 
-def _load_omnireset_partial_assembly_policy_poses(args, cfg) -> list[np.ndarray]:
-    if args.scenario != "furniturebench_leg":
-        raise ValueError("--teleport_pose_source omnireset_partial_assemblies is only valid for furniturebench_leg.")
-
+def _load_omnireset_partial_assembly_arrays(args) -> tuple[Path, np.ndarray, np.ndarray]:
     dataset_file = _resolve_dataset_file(_omnireset_partial_assembly_dataset_path(args))
     data = _torch_load_cpu(dataset_file)
     rel_pos = _to_numpy(data["relative_position"]).astype(np.float32)
@@ -490,6 +509,14 @@ def _load_omnireset_partial_assembly_policy_poses(args, cfg) -> list[np.ndarray]
             "OmniReset partial_assemblies.pt has mismatched relative_position and "
             f"relative_orientation lengths: {rel_pos.shape[0]} vs {rel_quat_wxyz.shape[0]}"
         )
+    return dataset_file, rel_pos, rel_quat_wxyz
+
+
+def _load_omnireset_partial_assembly_policy_poses(args, cfg) -> list[np.ndarray]:
+    if args.scenario != "furniturebench_leg":
+        raise ValueError("--teleport_pose_source omnireset_partial_assemblies is only valid for furniturebench_leg.")
+
+    dataset_file, rel_pos, rel_quat_wxyz = _load_omnireset_partial_assembly_arrays(args)
 
     num_available = int(rel_pos.shape[0])
     num_requested = max(1, int(args.teleport_dataset_count))
@@ -585,8 +612,12 @@ def _keypoint_max_dist_xyzw(
 def _sample_furniturebench_leg_start_pose(
     args,
     hole: np.ndarray,
+    fixture_root: np.ndarray,
     default_start_pose: np.ndarray,
 ) -> np.ndarray:
+    if bool(args.leg_start_from_omnireset_partial_assemblies):
+        return _sample_omnireset_partial_assembly_start_pose(args, fixture_root)
+
     if not bool(args.leg_randomize_start):
         return default_start_pose
 
@@ -613,6 +644,32 @@ def _sample_furniturebench_leg_start_pose(
     )
     args._sampled_leg_start_asset_pose_xyzw = _policy_to_leg_asset_pose_xyzw(start_pose)
     args._sampled_leg_start_rpy_deg = np.array([roll_deg, pitch_deg, yaw_deg], dtype=np.float32)
+    return start_pose
+
+
+def _sample_omnireset_partial_assembly_start_pose(args, fixture_root: np.ndarray) -> np.ndarray:
+    dataset_file, rel_pos, rel_quat_wxyz = _load_omnireset_partial_assembly_arrays(args)
+    num_available = int(rel_pos.shape[0])
+    if int(args.leg_start_partial_index) >= 0:
+        idx = int(args.leg_start_partial_index) % num_available
+    else:
+        rng = getattr(args, "_partial_start_rng", None)
+        if rng is None:
+            rng = np.random.default_rng(int(args.seed))
+            args._partial_start_rng = rng
+        idx = int(rng.integers(0, num_available))
+
+    fixture_pose_wxyz = np.array(
+        [float(fixture_root[0]), float(fixture_root[1]), float(fixture_root[2]), 1.0, 0.0, 0.0, 0.0],
+        dtype=np.float32,
+    )
+    rel_pose_wxyz = np.concatenate([rel_pos[idx], rel_quat_wxyz[idx]]).astype(np.float32)
+    asset_pose_wxyz = _compose_pose_wxyz(fixture_pose_wxyz, rel_pose_wxyz)
+    start_pose = _leg_asset_to_policy_pose_xyzw(pose_wxyz_to_xyzw(asset_pose_wxyz))
+    args._sampled_leg_start_asset_pose_xyzw = pose_wxyz_to_xyzw(asset_pose_wxyz)
+    args._sampled_leg_start_partial_index = idx
+    args._sampled_leg_start_partial_dataset = str(dataset_file)
+    args._sampled_leg_start_rpy_deg = np.zeros(3, dtype=np.float32)
     return start_pose
 
 
@@ -661,7 +718,7 @@ def _make_furniturebench_leg_trajectory(args) -> tuple[np.ndarray, list[np.ndarr
         np.array([0.10, 0.08, hole[2] + 0.18], dtype=np.float32),
         final_yaw,
     )
-    start_pose = _sample_furniturebench_leg_start_pose(args, hole, start_pose)
+    start_pose = _sample_furniturebench_leg_start_pose(args, hole, fixture_root, start_pose)
 
     if args.leg_goal_sequence == "final_only":
         return start_pose, [final_pose], fixture_root
@@ -833,7 +890,11 @@ def _make_cfg(args):
     cfg = SimToolRealEnvCfg()
     cfg.scene.num_envs = int(args.num_envs)
     cfg.assets.shuffle_assets = False
-    cfg.episode_length_s = max(10.0, float(args.max_steps + 60) / 60.0)
+    cfg.episode_length_s = (
+        float(args.episode_length_s)
+        if args.episode_length_s is not None
+        else max(10.0, float(args.max_steps + 60) / 60.0)
+    )
     _disable_randomness(cfg)
 
     if args.scenario == "claw_hammer":
@@ -1090,10 +1151,13 @@ def main() -> int:
     sampled_start = getattr(args, "_sampled_leg_start_asset_pose_xyzw", None)
     if sampled_start is not None:
         rpy_deg = getattr(args, "_sampled_leg_start_rpy_deg", np.zeros(3, dtype=np.float32))
+        partial_idx = getattr(args, "_sampled_leg_start_partial_index", None)
+        partial_msg = "" if partial_idx is None else f" partial_index={int(partial_idx)}"
         print(
             "[rollout] sampled leg start asset pose xyzw="
             f"{np.asarray(sampled_start, dtype=np.float32).tolist()} "
-            f"rpy_deg={np.asarray(rpy_deg, dtype=np.float32).tolist()} seed={int(args.seed)}",
+            f"rpy_deg={np.asarray(rpy_deg, dtype=np.float32).tolist()} "
+            f"seed={int(args.seed)}{partial_msg}",
             flush=True,
         )
 
@@ -1110,6 +1174,28 @@ def main() -> int:
     current_goal_idx = 0
     teleport_goal_idx = 0
     near_goal_steps = 0
+
+    def reset_to_new_partial_start(reason: str, step: int) -> None:
+        nonlocal obs, current_goal_idx, near_goal_steps
+        if args.scenario != "furniturebench_leg":
+            raise ValueError("--leg_resample_partial_start_on_reset is only valid for furniturebench_leg.")
+        fixture_root = np.asarray(cfg.reset.fixed_fixture_pose[:3], dtype=np.float32)
+        new_start_policy = _sample_omnireset_partial_assembly_start_pose(args, fixture_root)
+        new_start_asset = _policy_to_leg_asset_pose_xyzw(new_start_policy)
+        cfg.reset.fixed_start_pose = pose_xyzw_to_wxyz(new_start_asset)
+        obs, _ = env.reset()
+        _write_goal(inner, args, goals[0])
+        _set_goal_viz_visibility(bool(args.goal_viz_visible))
+        obs = inner._get_observations()
+        player.player.init_rnn()
+        current_goal_idx = 0
+        near_goal_steps = 0
+        print(
+            f"[rollout] step={step} reset after {reason}; "
+            f"new partial_index={int(args._sampled_leg_start_partial_index)}",
+            flush=True,
+        )
+
     print(
         f"[rollout] scenario={args.scenario} max_steps={args.max_steps} "
         f"goals={len(goals)} checkpoint={args.checkpoint} "
@@ -1250,6 +1336,9 @@ def main() -> int:
                 f"kp_dist={kp_dist:.4f} env_kp={env_kp_dist:.4f}",
                 flush=True,
             )
+            if bool(args.leg_resample_partial_start_on_reset):
+                reset_to_new_partial_start("success", step)
+                continue
             current_goal_idx += 1
             near_goal_steps = 0
             if current_goal_idx >= len(goals):
@@ -1260,13 +1349,18 @@ def main() -> int:
             _write_goal(inner, args, goals[current_goal_idx])
             obs = inner._get_observations()
 
-        if (bool(terminated[0].item()) or bool(truncated[0].item())) and not bool(args.ignore_dones):
+        env_done = bool(terminated[0].item()) or bool(truncated[0].item())
+        if env_done:
             print(
                 f"[rollout] env ended at step={step} "
                 f"terminated={bool(terminated[0].item())} truncated={bool(truncated[0].item())}",
                 flush=True,
             )
-            break
+            if bool(args.leg_resample_partial_start_on_reset):
+                reset_to_new_partial_start("env_done", step)
+                continue
+            if not bool(args.ignore_dones):
+                break
 
     npz_path = out_dir / "trajectory.npz"
     np.savez(
@@ -1286,6 +1380,13 @@ def main() -> int:
         start_pose_policy_xyzw=np.asarray(start_pose, dtype=np.float32),
         seed=np.asarray([int(args.seed)], dtype=np.int32),
         leg_randomize_start=np.asarray([bool(args.leg_randomize_start)], dtype=np.bool_),
+        leg_start_from_omnireset_partial_assemblies=np.asarray(
+            [bool(args.leg_start_from_omnireset_partial_assemblies)], dtype=np.bool_
+        ),
+        leg_start_partial_index=np.asarray(
+            [int(getattr(args, "_sampled_leg_start_partial_index", int(args.leg_start_partial_index)))],
+            dtype=np.int32,
+        ),
         object_scale=np.asarray(object_scale, dtype=np.float32),
         scenario=args.scenario,
         robot_control_mode=args.robot_control_mode,
