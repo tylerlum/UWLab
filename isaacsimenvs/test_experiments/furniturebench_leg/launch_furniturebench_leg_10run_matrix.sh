@@ -24,6 +24,7 @@ WANDB_GROUP="${WANDB_GROUP:-2026-05-06_leg_finetune_matrix01}"
 MAX_ITERATIONS="${MAX_ITERATIONS:-1000000}"
 HORIZON_LENGTH="${HORIZON_LENGTH:-16}"
 SEQ_LENGTH="${SEQ_LENGTH:-16}"
+SBATCH_MEM="${SBATCH_MEM:-128000}"
 SUCCESS_MODE="${SUCCESS_MODE:-omnireset_alignment}"
 ENABLE_RETRACT="${ENABLE_RETRACT:-false}"
 FORCE_CONSECUTIVE_NEAR_GOAL="${FORCE_CONSECUTIVE_NEAR_GOAL:-false}"
@@ -55,7 +56,7 @@ run_sbatch() {
     if [[ -n "$target_args_text" ]]; then
         read -r -a target_args <<< "$target_args_text"
     fi
-    local cmd=(sbatch --job-name="$label" "${target_args[@]}" "--export=$export_arg" "$SBATCH_SCRIPT")
+    local cmd=(sbatch --job-name="$label" "${target_args[@]}" --mem="$SBATCH_MEM" "--export=$export_arg" "$SBATCH_SCRIPT")
 
     printf '\n# %s\n' "$label"
     printf '%q ' "${cmd[@]}"
