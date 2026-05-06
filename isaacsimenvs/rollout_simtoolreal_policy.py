@@ -148,8 +148,38 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--goal_viz_opacity",
         type=float,
-        default=0.22,
+        default=0.55,
         help="Goal pose ghost opacity when visible; 0 is transparent, 1 is opaque.",
+    )
+    parser.add_argument(
+        "--goal_viz_keypoints",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Attach bright green keypoint dots to the goal pose for visibility when the ghost mesh is occluded.",
+    )
+    parser.add_argument(
+        "--goal_viz_keypoint_radius",
+        type=float,
+        default=0.025,
+        help="Radius in meters for goal keypoint dots.",
+    )
+    parser.add_argument(
+        "--goal_viz_pose_marker",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Attach a bright local pose marker to the goal root for visibility when the ghost mesh is occluded.",
+    )
+    parser.add_argument(
+        "--goal_viz_pose_marker_axis_length",
+        type=float,
+        default=0.08,
+        help="Length in meters for each axis bar of the goal root pose marker.",
+    )
+    parser.add_argument(
+        "--goal_viz_pose_marker_thickness",
+        type=float,
+        default=0.01,
+        help="Thickness in meters for goal root pose marker bars.",
     )
     parser.add_argument("--keypoint_tolerance", type=float, default=0.015)
     parser.add_argument("--success_steps", type=int, default=10)
@@ -601,6 +631,19 @@ def _keypoints_from_pose_xyzw(
     return pose[:3][None] + R.from_quat(pose[3:7]).apply(offsets)
 
 
+def _goal_keypoint_offsets_asset(args, object_scale: np.ndarray, cfg) -> np.ndarray:
+    offsets_policy = (
+        POLICY_KEYPOINT_CORNERS
+        * np.asarray(object_scale, dtype=np.float32)[None]
+        * float(cfg.reward.object_base_size)
+        * float(cfg.reward.keypoint_scale)
+        * 0.5
+    ).astype(np.float32)
+    if args.scenario == "furniturebench_leg":
+        return (R_USD_POLICY_LEG @ offsets_policy.T).T.astype(np.float32)
+    return offsets_policy
+
+
 def _keypoint_max_dist_xyzw(
     object_pose_xyzw: np.ndarray,
     goal_pose_xyzw: np.ndarray,
@@ -1007,11 +1050,20 @@ def _set_goal_viz_visibility(args, visible: bool) -> None:
         Gf.Vec3f(float(color[0]), float(color[1]), float(color[2]))
     )
     shader.CreateInput("opacity", Sdf.ValueTypeNames.Float).Set(opacity)
+    shader.CreateInput("emissiveColor", Sdf.ValueTypeNames.Color3f).Set(
+        Gf.Vec3f(float(color[0]) * 0.25, float(color[1]) * 0.25, float(color[2]) * 0.25)
+    )
+    shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(0.0)
     shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.45)
+    material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
     material.CreateSurfaceOutput(UsdShade.Tokens.universalRenderContext).ConnectToSource(
         shader.ConnectableAPI(), "surface"
     )
 
+    tinted_gprims = 0
+    marker_count = 0
+    pose_marker_count = 0
+    marker_offsets = getattr(args, "_goal_keypoint_offsets_asset", None)
     for prim_path in prim_paths:
         prim = stage.GetPrimAtPath(prim_path)
         if not prim.IsValid():
@@ -1021,7 +1073,16 @@ def _set_goal_viz_visibility(args, visible: bool) -> None:
             imageable.MakeVisible()
         else:
             imageable.MakeInvisible()
+        UsdShade.MaterialBindingAPI.Apply(prim).Bind(material)
         for child in Usd.PrimRange(prim):
+            if child == prim:
+                continue
+            child_imageable = UsdGeom.Imageable(child)
+            if child_imageable:
+                if visible:
+                    child_imageable.MakeVisible()
+                else:
+                    child_imageable.MakeInvisible()
             if not child.IsA(UsdGeom.Gprim):
                 continue
             gprim = UsdGeom.Gprim(child)
@@ -1029,8 +1090,78 @@ def _set_goal_viz_visibility(args, visible: bool) -> None:
             gprim.CreateDisplayOpacityAttr([opacity])
             binding_api = UsdShade.MaterialBindingAPI.Apply(child)
             binding_api.Bind(material)
+            tinted_gprims += 1
+
+        if bool(args.goal_viz_keypoints) and marker_offsets is not None:
+            marker_scope = stage.DefinePrim(f"{prim_path}/GoalKeypointMarkers", "Xform")
+            marker_imageable = UsdGeom.Imageable(marker_scope)
+            if visible:
+                marker_imageable.MakeVisible()
+            else:
+                marker_imageable.MakeInvisible()
+            UsdShade.MaterialBindingAPI.Apply(marker_scope).Bind(material)
+            for kp_idx, offset in enumerate(np.asarray(marker_offsets, dtype=np.float32)):
+                sphere = UsdGeom.Sphere.Define(stage, f"{prim_path}/GoalKeypointMarkers/kp_{kp_idx}")
+                sphere.CreateRadiusAttr(float(args.goal_viz_keypoint_radius))
+                xform = UsdGeom.Xformable(sphere.GetPrim())
+                xform.ClearXformOpOrder()
+                xform.AddTranslateOp().Set(
+                    Gf.Vec3d(float(offset[0]), float(offset[1]), float(offset[2]))
+                )
+                sphere.CreateDisplayColorAttr([Gf.Vec3f(float(color[0]), float(color[1]), float(color[2]))])
+                sphere.CreateDisplayOpacityAttr([1.0])
+                UsdShade.MaterialBindingAPI.Apply(sphere.GetPrim()).Bind(material)
+                if visible:
+                    UsdGeom.Imageable(sphere.GetPrim()).MakeVisible()
+                else:
+                    UsdGeom.Imageable(sphere.GetPrim()).MakeInvisible()
+                marker_count += 1
+
+        if bool(args.goal_viz_pose_marker):
+            marker_root = stage.DefinePrim(f"{prim_path}/GoalPoseMarker", "Xform")
+            marker_imageable = UsdGeom.Imageable(marker_root)
+            if visible:
+                marker_imageable.MakeVisible()
+            else:
+                marker_imageable.MakeInvisible()
+            UsdShade.MaterialBindingAPI.Apply(marker_root).Bind(material)
+
+            origin = UsdGeom.Sphere.Define(stage, f"{prim_path}/GoalPoseMarker/origin")
+            origin.CreateRadiusAttr(float(args.goal_viz_keypoint_radius) * 0.75)
+            origin.CreateDisplayColorAttr([Gf.Vec3f(float(color[0]), float(color[1]), float(color[2]))])
+            origin.CreateDisplayOpacityAttr([1.0])
+            UsdShade.MaterialBindingAPI.Apply(origin.GetPrim()).Bind(material)
+            if visible:
+                UsdGeom.Imageable(origin.GetPrim()).MakeVisible()
+            else:
+                UsdGeom.Imageable(origin.GetPrim()).MakeInvisible()
+            pose_marker_count += 1
+
+            axis_len = max(1.0e-4, float(args.goal_viz_pose_marker_axis_length))
+            thickness = max(1.0e-4, float(args.goal_viz_pose_marker_thickness))
+            axis_specs = {
+                "x": ((0.5 * axis_len, 0.0, 0.0), (axis_len, thickness, thickness)),
+                "y": ((0.0, 0.5 * axis_len, 0.0), (thickness, axis_len, thickness)),
+                "z": ((0.0, 0.0, 0.5 * axis_len), (thickness, thickness, axis_len)),
+            }
+            for axis_name, (translation, scale) in axis_specs.items():
+                bar = UsdGeom.Cube.Define(stage, f"{prim_path}/GoalPoseMarker/axis_{axis_name}")
+                bar.CreateSizeAttr(1.0)
+                bar.CreateDisplayColorAttr([Gf.Vec3f(float(color[0]), float(color[1]), float(color[2]))])
+                bar.CreateDisplayOpacityAttr([1.0])
+                xform = UsdGeom.Xformable(bar.GetPrim())
+                xform.ClearXformOpOrder()
+                xform.AddTranslateOp().Set(Gf.Vec3d(*[float(v) for v in translation]))
+                xform.AddScaleOp().Set(Gf.Vec3d(*[float(v) for v in scale]))
+                UsdShade.MaterialBindingAPI.Apply(bar.GetPrim()).Bind(material)
+                if visible:
+                    UsdGeom.Imageable(bar.GetPrim()).MakeVisible()
+                else:
+                    UsdGeom.Imageable(bar.GetPrim()).MakeInvisible()
+                pose_marker_count += 1
     print(
         f"[rollout] goal_viz_visible={visible} prims={len(prim_paths)} "
+        f"gprims={tinted_gprims} markers={marker_count} pose_markers={pose_marker_count} "
         f"color={color.tolist()} opacity={opacity:.3f}",
         flush=True,
     )
@@ -1138,6 +1269,7 @@ def main() -> int:
     np.random.seed(int(args.seed))
     torch.manual_seed(int(args.seed))
     cfg, start_pose, goals, object_scale = _make_cfg(args)
+    args._goal_keypoint_offsets_asset = _goal_keypoint_offsets_asset(args, object_scale, cfg)
 
     env = gym.make("Isaacsimenvs-SimToolReal-Direct-v0", cfg=cfg)
     inner = env.unwrapped
