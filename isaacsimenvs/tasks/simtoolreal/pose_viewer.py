@@ -470,6 +470,7 @@ class SimToolRealPoseViewerWrapper(gym.Wrapper):
         result = self.env.step(action)
         self._step += 1
         env_done = self._env_id_done(result)
+        started_after_boundary = False
 
         if self.full_episodes:
             if self._frames is None and self.capture_interval > 0 and self._step % self.capture_interval == 0:
@@ -478,12 +479,16 @@ class SimToolRealPoseViewerWrapper(gym.Wrapper):
                 self._frames = []
                 self._episodes_in_capture = 0
                 self._waiting_for_episode_boundary = False
+                # DirectRLEnv has already reset completed envs before returning
+                # the done flag.  Do not count this boundary step as a captured
+                # episode, or the HTML becomes a one-frame post-reset snapshot.
+                started_after_boundary = True
         elif self._frames is None and self.capture_interval > 0 and self._step % self.capture_interval == 0:
             self._frames = []
 
         if self._frames is not None:
             self._frames.append(capture_pose_viewer_frame(self.env.unwrapped, self.env_id))
-            if self.full_episodes and env_done:
+            if self.full_episodes and env_done and not started_after_boundary:
                 self._episodes_in_capture += 1
                 if self._episodes_in_capture >= self.episodes_per_capture:
                     self._finalize_capture()
