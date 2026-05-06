@@ -94,6 +94,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max_steps", type=int, default=600)
     parser.add_argument("--num_envs", type=int, default=1)
     parser.add_argument("--rl_device", default="cuda")
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="Seed for rollout-script sampling, including randomized FurnitureBench leg starts.",
+    )
     parser.add_argument("--checkpoint", default=str(POLICY_DIR / "model.pth"))
     parser.add_argument("--config", default=str(POLICY_DIR / "config.yaml"))
     parser.add_argument(
@@ -217,6 +223,59 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--leg_spin_steps", type=int, default=8)
     parser.add_argument("--leg_fixture_clearance", type=float, default=0.002)
+    parser.add_argument(
+        "--leg_randomize_start",
+        action="store_true",
+        help="Sample the FurnitureBench leg initial pose instead of using the fixed scripted start.",
+    )
+    parser.add_argument(
+        "--leg_random_start_xy_center",
+        nargs=2,
+        type=float,
+        default=(0.10, 0.08),
+        metavar=("X", "Y"),
+        help="Center of the randomized leg start XY range in env/world frame.",
+    )
+    parser.add_argument(
+        "--leg_random_start_xy_range",
+        nargs=2,
+        type=float,
+        default=(0.025, 0.025),
+        metavar=("DX", "DY"),
+        help="Uniform half-widths for randomized leg start XY. Increase to cover more of the table.",
+    )
+    parser.add_argument(
+        "--leg_random_start_z_offset_from_hole",
+        type=float,
+        default=0.18,
+        help="Nominal randomized leg root Z as approximate hole-top Z plus this offset.",
+    )
+    parser.add_argument(
+        "--leg_random_start_z_range",
+        type=float,
+        default=0.01,
+        help="Uniform half-width for randomized leg start Z.",
+    )
+    parser.add_argument(
+        "--leg_random_start_yaw_center_deg",
+        type=float,
+        default=0.0,
+        help="Center yaw for randomized leg starts, about raw/world +Z.",
+    )
+    parser.add_argument(
+        "--leg_random_start_yaw_range_deg",
+        type=float,
+        default=25.0,
+        help="Uniform half-width for randomized leg start yaw in degrees.",
+    )
+    parser.add_argument(
+        "--leg_random_start_roll_pitch_range_deg",
+        nargs=2,
+        type=float,
+        default=(0.0, 0.0),
+        metavar=("ROLL", "PITCH"),
+        help="Uniform half-widths for randomized roll/pitch in degrees; keep zero for upright starts.",
+    )
     return parser
 
 
@@ -306,17 +365,21 @@ def _leg_asset_to_policy_pose_xyzw(asset_pose: np.ndarray) -> np.ndarray:
     return pose
 
 
+def _leg_policy_pose_from_asset_rotation(pos: np.ndarray, rot: R) -> np.ndarray:
+    asset_pose = np.array(
+        [float(pos[0]), float(pos[1]), float(pos[2]), *rot.as_quat()],
+        dtype=np.float32,
+    )
+    return _leg_asset_to_policy_pose_xyzw(asset_pose)
+
+
 def _upright_leg_policy_pose(pos: np.ndarray, yaw_rad: float) -> np.ndarray:
     """Return a policy-frame pose for an upright raw SquareLeg asset.
 
     Raw SquareLeg ``+Z`` points from screw threads toward the handle, so the
     inserted/upright asset orientation is just a yaw about raw/world ``+Z``.
     """
-    asset_pose = np.array(
-        [float(pos[0]), float(pos[1]), float(pos[2]), *R.from_euler("z", yaw_rad).as_quat()],
-        dtype=np.float32,
-    )
-    return _leg_asset_to_policy_pose_xyzw(asset_pose)
+    return _leg_policy_pose_from_asset_rotation(pos, R.from_euler("z", yaw_rad))
 
 
 def _keypoints_from_pose_xyzw(
@@ -357,6 +420,40 @@ def _keypoint_max_dist_xyzw(
         keypoint_scale=keypoint_scale,
     )
     return float(np.linalg.norm(object_kps - goal_kps, axis=-1).max())
+
+
+def _sample_furniturebench_leg_start_pose(
+    args,
+    hole: np.ndarray,
+    default_start_pose: np.ndarray,
+) -> np.ndarray:
+    if not bool(args.leg_randomize_start):
+        return default_start_pose
+
+    rng = np.random.default_rng(int(args.seed))
+    xy_center = np.asarray(args.leg_random_start_xy_center, dtype=np.float32)
+    xy_range = np.asarray(args.leg_random_start_xy_range, dtype=np.float32)
+    roll_pitch_range = np.asarray(args.leg_random_start_roll_pitch_range_deg, dtype=np.float32)
+
+    xy = xy_center + rng.uniform(-xy_range, xy_range).astype(np.float32)
+    z = (
+        float(hole[2])
+        + float(args.leg_random_start_z_offset_from_hole)
+        + float(rng.uniform(-float(args.leg_random_start_z_range), float(args.leg_random_start_z_range)))
+    )
+    roll_deg = float(rng.uniform(-roll_pitch_range[0], roll_pitch_range[0]))
+    pitch_deg = float(rng.uniform(-roll_pitch_range[1], roll_pitch_range[1]))
+    yaw_deg = float(args.leg_random_start_yaw_center_deg) + float(
+        rng.uniform(-float(args.leg_random_start_yaw_range_deg), float(args.leg_random_start_yaw_range_deg))
+    )
+
+    start_pose = _leg_policy_pose_from_asset_rotation(
+        np.array([xy[0], xy[1], z], dtype=np.float32),
+        R.from_euler("xyz", [roll_deg, pitch_deg, yaw_deg], degrees=True),
+    )
+    args._sampled_leg_start_asset_pose_xyzw = _policy_to_leg_asset_pose_xyzw(start_pose)
+    args._sampled_leg_start_rpy_deg = np.array([roll_deg, pitch_deg, yaw_deg], dtype=np.float32)
+    return start_pose
 
 
 def _make_furniturebench_leg_trajectory(args) -> tuple[np.ndarray, list[np.ndarray], np.ndarray]:
@@ -404,6 +501,7 @@ def _make_furniturebench_leg_trajectory(args) -> tuple[np.ndarray, list[np.ndarr
         np.array([0.10, 0.08, hole[2] + 0.18], dtype=np.float32),
         final_yaw,
     )
+    start_pose = _sample_furniturebench_leg_start_pose(args, hole, start_pose)
 
     if args.leg_goal_sequence == "final_only":
         return start_pose, [final_pose], fixture_root
@@ -735,6 +833,8 @@ def main() -> int:
     from deployment.rl_player import RlPlayer
 
     args = _args
+    np.random.seed(int(args.seed))
+    torch.manual_seed(int(args.seed))
     cfg, start_pose, goals, object_scale = _make_cfg(args)
 
     env = gym.make("Isaacsimenvs-SimToolReal-Direct-v0", cfg=cfg)
@@ -783,6 +883,16 @@ def main() -> int:
 
     out_dir = Path(args.out_dir) / args.scenario
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    sampled_start = getattr(args, "_sampled_leg_start_asset_pose_xyzw", None)
+    if sampled_start is not None:
+        rpy_deg = getattr(args, "_sampled_leg_start_rpy_deg", np.zeros(3, dtype=np.float32))
+        print(
+            "[rollout] sampled leg start asset pose xyzw="
+            f"{np.asarray(sampled_start, dtype=np.float32).tolist()} "
+            f"rpy_deg={np.asarray(rpy_deg, dtype=np.float32).tolist()} seed={int(args.seed)}",
+            flush=True,
+        )
 
     obs_log: list[np.ndarray] = []
     action_log: list[np.ndarray] = []
@@ -949,6 +1059,9 @@ def main() -> int:
         teleport_poses_policy_xyzw=np.asarray(teleport_poses, dtype=np.float32),
         commanded_teleport_poses_policy_xyzw=np.asarray(teleport_pose_log, dtype=np.float32),
         teleport_interval_steps=np.asarray([teleport_interval_steps], dtype=np.int32),
+        start_pose_policy_xyzw=np.asarray(start_pose, dtype=np.float32),
+        seed=np.asarray([int(args.seed)], dtype=np.int32),
+        leg_randomize_start=np.asarray([bool(args.leg_randomize_start)], dtype=np.bool_),
         object_scale=np.asarray(object_scale, dtype=np.float32),
         scenario=args.scenario,
         robot_control_mode=args.robot_control_mode,
