@@ -760,8 +760,9 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
         episode_final = self.extras.setdefault("episode_final", {})
         episode_final["success_ratio"] = success_ratio
         episode_final["all_goals_hit"] = (self._successes >= self.env_max_goals).float()
-        episode_final["screw_cw_turns_after_entry"] = self._leg_screw_max_cw_turns
-        episode_final["screw_depth_after_entry_m"] = self._leg_screw_max_depth
+        # Clone live buffers before rl_games can reset completed envs.
+        episode_final["screw_cw_turns_after_entry"] = self._leg_screw_max_cw_turns.clone()
+        episode_final["screw_depth_after_entry_m"] = self._leg_screw_max_depth.clone()
         episode_final["screw_pushthrough"] = self._leg_screw_pushthrough.float()
         episode_final["screw_insert_like"] = screw_insert_like.float()
         if self.cfg.furniturebench_leg.enable_retract:
