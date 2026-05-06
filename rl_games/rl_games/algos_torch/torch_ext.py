@@ -72,8 +72,9 @@ def safe_filesystem_op(func, *args, **kwargs):
 
 def safe_symlink(src, dst):
     try:
-        safe_filesystem_op(os.remove, dst)
-    except (FileExistsError, RuntimeError):
+        if os.path.lexists(dst):
+            safe_filesystem_op(os.remove, dst)
+    except (FileExistsError, FileNotFoundError, RuntimeError):
         pass
     safe_filesystem_op(os.symlink, src, dst)
 
