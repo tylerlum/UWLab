@@ -22,11 +22,11 @@ DRY_RUN="${DRY_RUN:-1}"
 SUBMIT_CLUSTER="${SUBMIT_CLUSTER:-1}"
 PRINT_LOCAL="${PRINT_LOCAL:-1}"
 
-WANDB_GROUP="${WANDB_GROUP:-2026-05-06_leg_high_hover_controls_matrix01}"
+WANDB_GROUP="${WANDB_GROUP:-2026-05-06_leg_high_hover_controls_matrix02_small}"
 MAX_ITERATIONS="${MAX_ITERATIONS:-1000000}"
 HORIZON_LENGTH="${HORIZON_LENGTH:-16}"
 SEQ_LENGTH="${SEQ_LENGTH:-16}"
-SBATCH_MEM="${SBATCH_MEM:-128000}"
+SBATCH_MEM="${SBATCH_MEM:-220000}"
 
 A5000_TARGET="${A5000_TARGET:---nodelist=move3}"
 L40S_TARGET="${L40S_TARGET:---nodelist=move4}"
@@ -46,7 +46,7 @@ COMMON_EXPORTS=(
     "FORCE_SCALE=0.0"
     "TORQUE_SCALE=0.0"
     "OBJECT_SCALE_NOISE_RANGE=[1.0,1.0]"
-    "CAPTURE_VIDEO=true"
+    "CAPTURE_VIDEO=false"
     "VIDEO_INTERVAL=6000"
     "VIDEO_CAPTURE_FRAMES=600"
     "VIDEO_FPS=30"
@@ -128,20 +128,20 @@ echo "Dry run:      $DRY_RUN"
 
 # Fixture-away controls: goal remains at the normal hole target, physical
 # threaded tabletop is shifted aside, success is SimToolReal keypoint success.
-submit_job "a5000" "$A5000_TARGET" 3072 512 "highHover" "simtoolreal_keypoints" "[-0.25,0.0]" "[0.0,0.0]" 42 "ctrl_fixture_away"
-submit_job "a5000" "$A5000_TARGET" 3072 512 "highHoverAndFinal" "simtoolreal_keypoints" "[-0.25,0.0]" "[0.0,0.0]" 43 "ctrl_fixture_away"
-submit_job "a5000" "$A5000_TARGET" 3072 512 "dense" "simtoolreal_keypoints" "[-0.25,0.0]" "[0.0,0.0]" 44 "ctrl_fixture_away"
-
-submit_job "l40s" "$L40S_TARGET" 6144 1024 "finalGoalOnly" "simtoolreal_keypoints" "[-0.25,0.0]" "[0.0,0.0]" 45 "ctrl_fixture_away"
-submit_job "l40s" "$L40S_TARGET" 6144 1024 "preInsertAndFinal" "simtoolreal_keypoints" "[-0.25,0.0]" "[0.0,0.0]" 46 "ctrl_fixture_away"
+# Keep A5000 controls smaller: 3 x 3072-env rendering jobs exceeded the
+# 125 GB cgroup limit during Isaac scene startup in matrix01.
+submit_job "a5000" "$A5000_TARGET" 1536 256 "highHover" "simtoolreal_keypoints" "[-0.25,0.0]" "[0.0,0.0]" 42 "ctrl_fixture_away"
+submit_job "a5000" "$A5000_TARGET" 1536 256 "highHoverAndFinal" "simtoolreal_keypoints" "[-0.25,0.0]" "[0.0,0.0]" 43 "ctrl_fixture_away"
+submit_job "a5000" "$A5000_TARGET" 1536 256 "finalGoalOnly" "simtoolreal_keypoints" "[-0.25,0.0]" "[0.0,0.0]" 44 "ctrl_fixture_away"
 
 # Fixture-present runs: normal threaded tabletop, final goal uses OmniReset's
-# assembled-frame position + roll/pitch alignment.
-submit_job "l40s" "$L40S_TARGET" 6144 1024 "highHoverAndFinal" "omnireset_alignment" "[0.0,0.0]" "[0.0,0.0]" 47 "real_fixture"
+# assembled-frame position + roll/pitch alignment. These are the main training
+# probes; env counts are also conservative to avoid startup cgroup OOM.
+submit_job "l40s" "$L40S_TARGET" 3072 512 "highHoverAndFinal" "omnireset_alignment" "[0.0,0.0]" "[0.0,0.0]" 45 "real_fixture"
+submit_job "l40s" "$L40S_TARGET" 3072 512 "dense" "omnireset_alignment" "[0.0,0.0]" "[0.0,0.0]" 46 "real_fixture"
 
-submit_job "rtx6000" "$RTX6000_TARGET" 6144 1024 "dense" "omnireset_alignment" "[0.0,0.0]" "[0.0,0.0]" 48 "real_fixture"
-submit_job "rtx6000" "$RTX6000_TARGET" 6144 1024 "preInsertAndFinal" "omnireset_alignment" "[0.0,0.0]" "[0.0,0.0]" 49 "real_fixture"
-submit_job "rtx6000" "$RTX6000_TARGET" 6144 1024 "finalGoalOnly" "omnireset_alignment" "[0.0,0.0]" "[0.0,0.0]" 50 "real_fixture"
+submit_job "rtx6000" "$RTX6000_TARGET" 3072 512 "preInsertAndFinal" "omnireset_alignment" "[0.0,0.0]" "[0.0,0.0]" 47 "real_fixture"
+submit_job "rtx6000" "$RTX6000_TARGET" 3072 512 "dense" "omnireset_alignment" "[0.0,0.0]" "[0.0,0.0]" 48 "real_fixture"
 
 if [[ "$PRINT_LOCAL" == "1" ]]; then
     cat <<EOF
