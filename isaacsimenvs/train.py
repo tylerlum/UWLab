@@ -192,10 +192,15 @@ def main() -> None:
                         print(f"[RecordVideo] WandB log failed for {video_path}: {exc}", flush=True)
 
             video_folder = str(Path(hydra_run_dir) / "videos")
+            def _video_step_trigger(step: int) -> bool:
+                if args_cli.video_interval <= 0:
+                    return step == 0
+                return step % args_cli.video_interval == 0
+
             env = WandbRecordVideo(
                 env,
                 video_folder=video_folder,
-                step_trigger=lambda step: step % args_cli.video_interval == 0,
+                step_trigger=_video_step_trigger,
                 video_length=args_cli.video_capture_frames,
                 fps=args_cli.video_fps,
                 disable_logger=True,
@@ -269,6 +274,14 @@ def main() -> None:
         )
 
     run()
+
+    try:
+        import wandb
+
+        if wandb.run is not None:
+            wandb.finish()
+    except Exception as exc:
+        print(f"[WandB] finish failed during shutdown: {exc}", flush=True)
 
     # Kit shutdown hangs (per CLAUDE.md + isaacsim_conversion/distill.py).
     del app
