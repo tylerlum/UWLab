@@ -58,6 +58,8 @@ RANDOM_START_YAW_RANGE_DEG="${RANDOM_START_YAW_RANGE_DEG:-0.0}"
 RANDOM_START_ROLL_PITCH_RANGE_DEG="${RANDOM_START_ROLL_PITCH_RANGE_DEG:-[0.0,0.0]}"
 SUCCESS_TOLERANCE="${SUCCESS_TOLERANCE:-0.075}"
 TARGET_SUCCESS_TOLERANCE="${TARGET_SUCCESS_TOLERANCE:-0.01}"
+OMNIRESET_POSITION_SUCCESS_THRESHOLD="${OMNIRESET_POSITION_SUCCESS_THRESHOLD:-0.02}"
+OMNIRESET_ORIENTATION_SUCCESS_THRESHOLD="${OMNIRESET_ORIENTATION_SUCCESS_THRESHOLD:-0.10}"
 SUCCESS_STEPS="${SUCCESS_STEPS:-10}"
 
 # Keep num_envs / expl_coef_block_size = 6 when possible to match the pretrained
@@ -134,6 +136,7 @@ echo "Retract:       $ENABLE_RETRACT"
 echo "Force lifted:  $FORCE_LIFTED_FOR_KEYPOINT_REWARD"
 echo "Hover height:  $HOVER_HEIGHT"
 echo "Fixture/goal:  $FIXTURE_XY_OFFSET / $GOAL_XY_OFFSET"
+echo "OmniReset tol: $OMNIRESET_POSITION_SUCCESS_THRESHOLD m / $OMNIRESET_ORIENTATION_SUCCESS_THRESHOLD rad"
 echo "Capture video: $CAPTURE_VIDEO"
 echo "Num envs:      $NUM_ENVS"
 echo "Block size:    $EXPL_COEF_BLOCK_SIZE"
@@ -213,6 +216,8 @@ fi
     env.furniturebench_leg.enable_retract="$ENABLE_RETRACT" \
     env.furniturebench_leg.force_lifted_for_keypoint_reward="$FORCE_LIFTED_FOR_KEYPOINT_REWARD" \
     env.furniturebench_leg.hover_height="$HOVER_HEIGHT" \
+    env.furniturebench_leg.omnireset_position_success_threshold="$OMNIRESET_POSITION_SUCCESS_THRESHOLD" \
+    env.furniturebench_leg.omnireset_orientation_success_threshold="$OMNIRESET_ORIENTATION_SUCCESS_THRESHOLD" \
     "env.furniturebench_leg.fixture_xy_offset=$FIXTURE_XY_OFFSET" \
     "env.furniturebench_leg.goal_xy_offset=$GOAL_XY_OFFSET" \
     "env.furniturebench_leg.random_start_xy_center=$RANDOM_START_XY_CENTER" \

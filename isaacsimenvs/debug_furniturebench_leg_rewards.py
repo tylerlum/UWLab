@@ -56,6 +56,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--physics_profile", choices=("omnireset", "simtoolreal"), default="omnireset")
     parser.add_argument("--hover_height", type=float, default=None)
+    parser.add_argument("--omnireset_position_success_threshold", type=float, default=None)
+    parser.add_argument("--omnireset_orientation_success_threshold", type=float, default=None)
     parser.add_argument(
         "--force_lifted_for_keypoint_reward",
         action=argparse.BooleanOptionalAction,
@@ -139,6 +141,14 @@ def _make_cfg(args):
     cfg.furniturebench_leg.physics_profile = str(args.physics_profile)
     if args.hover_height is not None:
         cfg.furniturebench_leg.hover_height = float(args.hover_height)
+    if args.omnireset_position_success_threshold is not None:
+        cfg.furniturebench_leg.omnireset_position_success_threshold = float(
+            args.omnireset_position_success_threshold
+        )
+    if args.omnireset_orientation_success_threshold is not None:
+        cfg.furniturebench_leg.omnireset_orientation_success_threshold = float(
+            args.omnireset_orientation_success_threshold
+        )
     if args.force_lifted_for_keypoint_reward is not None:
         cfg.furniturebench_leg.force_lifted_for_keypoint_reward = bool(
             args.force_lifted_for_keypoint_reward
