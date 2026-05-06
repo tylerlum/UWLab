@@ -602,6 +602,8 @@ table static/dynamic = 0.45 / 0.35
 
 The 0.05 kg leg mass is intentional. OmniReset's config spawns variant insertive objects at 0.001 kg, but the RL-state task also has a startup mass randomization event that overwrites the insertive object mass with an absolute 0.02-0.2 kg sample. The deterministic SimToolReal leg profile uses 0.05 kg as an in-range representative value.
 
+For large-batch training, VRAM is not the only limiter. A 2026-05-06 RTX PRO 6000 smoke at `12288` envs fit in GPU memory but produced PhysX `PxGpuDynamicsMemoryConfig::collisionStackSize buffer overflow` errors and dropped contacts. That is bad data for this task. The cluster launcher caps the RTX PRO 6000 jobs at `6144` envs / `1024` SAPG block size unless a higher count is re-smoked without any collision-stack warnings.
+
 ## Robot Gains and Gravity
 
 Robot PD gains are owned by `isaacsimenvs/tasks/simtoolreal/utils/scene_utils.py`.

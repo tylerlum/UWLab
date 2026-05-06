@@ -119,10 +119,13 @@ submit_job "l40s" "$L40S_TARGET" 6144 1024 "finalGoalOnly" "upright_fixed" 45
 submit_job "l40s" "$L40S_TARGET" 6144 1024 "preInsertAndFinal" "upright_fixed" 46
 submit_job "l40s" "$L40S_TARGET" 6144 1024 "dense" "upright_fixed" 47
 
-# RTX PRO 6000 jobs: hardest random-table starts get the largest batch.
-submit_job "rtx6000" "$RTX6000_TARGET" 12288 2048 "finalGoalOnly" "random_table" 48
-submit_job "rtx6000" "$RTX6000_TARGET" 12288 2048 "preInsertAndFinal" "random_table" 49
-submit_job "rtx6000" "$RTX6000_TARGET" 12288 2048 "dense" "random_table" 50
+# RTX PRO 6000 jobs: random-table starts are the hardest contact workload.
+# 12288 envs can overflow PhysX's GPU collision stack for the threaded SDF
+# contacts, dropping contacts even with ample VRAM. Keep the same SAPG block
+# ratio as the L40S jobs unless this is explicitly re-smoked.
+submit_job "rtx6000" "$RTX6000_TARGET" 6144 1024 "finalGoalOnly" "random_table" 48
+submit_job "rtx6000" "$RTX6000_TARGET" 6144 1024 "preInsertAndFinal" "random_table" 49
+submit_job "rtx6000" "$RTX6000_TARGET" 6144 1024 "dense" "random_table" 50
 
 if [[ "$PRINT_LOCAL" == "1" ]]; then
     cat <<EOF

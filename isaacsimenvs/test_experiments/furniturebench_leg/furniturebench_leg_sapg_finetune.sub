@@ -53,7 +53,9 @@ FORCE_CONSECUTIVE_NEAR_GOAL="${FORCE_CONSECUTIVE_NEAR_GOAL:-false}"
 # checkpoint_load_mode=weights, but exact block count is cleaner for real runs.
 # Default is A5000/24 GB conservative while keeping
 # num_envs / expl_coef_block_size = 6 to match the pretrained SAPG block count.
-# Use 6144/1024 on L40S and 12288/2048 on RTX PRO 6000 after smoke checks.
+# Use 6144/1024 on L40S and RTX PRO 6000 for this contact-heavy threaded task;
+# 12288 envs on RTX PRO 6000 overflows the PhysX GPU collision stack and drops
+# contacts despite fitting in VRAM.
 NUM_ENVS="${NUM_ENVS:-3072}"
 EXPL_COEF_BLOCK_SIZE="${EXPL_COEF_BLOCK_SIZE:-512}"
 HORIZON_LENGTH="${HORIZON_LENGTH:-16}"
