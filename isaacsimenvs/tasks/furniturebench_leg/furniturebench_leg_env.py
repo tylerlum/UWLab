@@ -119,9 +119,9 @@ def _quat_rpy(device, roll: torch.Tensor, pitch: torch.Tensor, yaw: torch.Tensor
 
 
 def _goal_count_from_mode(goal_mode: str, dense_descend_steps: int) -> int:
-    if goal_mode == "finalGoalOnly":
+    if goal_mode in ("finalGoalOnly", "highHover"):
         return 1
-    if goal_mode == "preInsertAndFinal":
+    if goal_mode in ("preInsertAndFinal", "highHoverAndFinal"):
         return 2
     if goal_mode == "dense":
         return 2 + max(1, int(dense_descend_steps))
@@ -155,6 +155,7 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
         self._leg_fixture_root_local = self._compute_fixture_root_local()
         self._leg_goal_root_local = self._compute_goal_root_local()
         self._leg_goals_asset_t = self._build_goal_sequence_asset()
+        self._leg_goal_uses_omnireset_success_t = self._build_goal_success_modes()
         self._leg_num_goals = int(self._leg_goals_asset_t.shape[0])
         cfg.termination.max_consecutive_successes = self._leg_num_goals
 
@@ -321,16 +322,20 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
         pre_pos = torch.stack([hole[0], hole[1], torch.as_tensor(pre_z, device=self.device)])
         final = self._asset_pose(final_pos, final_yaw)
         pre = self._asset_pose(pre_pos, pre_yaw)
+        hover = self._asset_pose(
+            torch.stack([hole[0], hole[1], hole[2] + float(leg_cfg.hover_height)]),
+            final_yaw,
+        )
 
         if leg_cfg.goal_mode == "finalGoalOnly":
             goals = [final]
+        elif leg_cfg.goal_mode == "highHover":
+            goals = [hover]
         elif leg_cfg.goal_mode == "preInsertAndFinal":
             goals = [pre, final]
+        elif leg_cfg.goal_mode == "highHoverAndFinal":
+            goals = [hover, final]
         else:
-            hover = self._asset_pose(
-                torch.stack([hole[0], hole[1], hole[2] + float(leg_cfg.hover_height)]),
-                final_yaw,
-            )
             goals = [hover, pre]
             steps = max(1, int(leg_cfg.dense_descend_steps))
             total_yaw_delta = final_yaw - pre_yaw - 2.0 * torch.pi * float(leg_cfg.dense_screw_turns)
@@ -340,6 +345,24 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
                 yaw = pre_yaw + float(total_yaw_delta) * frac
                 goals.append(self._asset_pose(torch.stack([hole[0], hole[1], torch.as_tensor(z, device=self.device)]), yaw))
         return torch.stack(goals, dim=0).contiguous()
+
+    def _build_goal_success_modes(self) -> torch.Tensor:
+        """Return True for subgoals that should use OmniReset final alignment."""
+        mode = str(self.cfg.furniturebench_leg.goal_mode)
+        if mode == "finalGoalOnly":
+            flags = [True]
+        elif mode == "highHover":
+            flags = [False]
+        elif mode == "preInsertAndFinal":
+            flags = [False, True]
+        elif mode == "highHoverAndFinal":
+            flags = [False, True]
+        elif mode == "dense":
+            flags = [False] * max(1, self._leg_goals_asset_t.shape[0])
+            flags[-1] = True
+        else:
+            raise ValueError(f"goal_mode must be one of {VALID_GOAL_MODES}, got {mode!r}")
+        return torch.tensor(flags, dtype=torch.bool, device=self.device)
 
     def _load_partial_assemblies(self) -> None:
         path = _resolve_partial_assemblies_path(self.cfg.furniturebench_leg.partial_assemblies_path)
@@ -505,11 +528,13 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
 
         if use_omnireset_success:
             active_goal_idx = (self._successes % self.env_max_goals).long()
-            is_final_goal = active_goal_idx >= (self.env_max_goals - 1)
+            uses_omnireset_success = self._leg_goal_uses_omnireset_success_t[active_goal_idx]
             keypoint_near_goal = self._near_goal.clone()
             self._keypoint_near_goal_for_active_goal = keypoint_near_goal
             omnireset_near_goal = self._compute_omnireset_alignment_near_goal()
-            self._near_goal = torch.where(is_final_goal, omnireset_near_goal, keypoint_near_goal)
+            self._near_goal = torch.where(
+                uses_omnireset_success, omnireset_near_goal, keypoint_near_goal
+            )
             self._near_goal_steps = update_near_goal_steps(
                 near_goal=self._near_goal,
                 near_goal_steps=near_goal_steps_before,
@@ -641,11 +666,10 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
             self.extras["near_goal_ratio"] = self._near_goal.float().mean()
             self.extras["near_goal_steps_max"] = self._near_goal_steps.max()
             active_goal_idx = (self._successes % self.env_max_goals).long()
+            uses_omnireset_success = self._leg_goal_uses_omnireset_success_t[active_goal_idx]
             self.extras["active_goal_index_mean"] = active_goal_idx.float().mean()
             self.extras["active_goal_index_max"] = active_goal_idx.max()
-            self.extras["active_final_goal_ratio"] = (
-                active_goal_idx >= (self.env_max_goals - 1)
-            ).float().mean()
+            self.extras["active_final_goal_ratio"] = uses_omnireset_success.float().mean()
             self.extras["keypoint_near_goal_ratio"] = (
                 self._keypoint_near_goal_for_active_goal.float().mean()
             )

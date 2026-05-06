@@ -7,7 +7,7 @@ from isaaclab.utils import configclass
 from isaacsimenvs.tasks.simtoolreal.simtoolreal_env_cfg import SimToolRealEnvCfg
 
 
-VALID_GOAL_MODES = ("dense", "preInsertAndFinal", "finalGoalOnly")
+VALID_GOAL_MODES = ("dense", "preInsertAndFinal", "finalGoalOnly", "highHover", "highHoverAndFinal")
 VALID_INIT_MODES = ("random_table", "upright_fixed", "omnireset_partial_assemblies")
 VALID_SUCCESS_MODES = ("omnireset_alignment", "simtoolreal_keypoints")
 
@@ -21,14 +21,14 @@ class FurnitureBenchLegCfg:
     hole_index: int = 0
     use_omnireset_final_height: bool = True
     fixture_clearance: float = 0.002
-    hover_height: float = 0.12
+    hover_height: float = 0.4
     insert_height: float = 0.038
     preinsert_final_z_offset: float = 0.015427
     preinsert_yaw_offset_deg: float = 20.73494
     final_yaw_offset_deg: float = 0.0
     dense_descend_steps: int = 10
     dense_screw_turns: float = 1.0
-    force_lifted_for_keypoint_reward: bool = True
+    force_lifted_for_keypoint_reward: bool = False
     success_mode: str = "omnireset_alignment"
     omnireset_position_success_threshold: float = 0.0025
     omnireset_orientation_success_threshold: float = 0.025

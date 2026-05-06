@@ -261,7 +261,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--leg_hole_index", type=int, default=0, choices=range(4))
     parser.add_argument(
         "--leg_goal_sequence",
-        choices=("dense", "final_only", "preinsert_final", "pingpong"),
+        choices=("dense", "final_only", "preinsert_final", "high_hover", "high_hover_final", "pingpong"),
         default="dense",
         help="FurnitureBench leg goal sequence to expose to the policy or teleport driver.",
     )
@@ -328,6 +328,22 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--leg_spin_steps", type=int, default=8)
     parser.add_argument("--leg_fixture_clearance", type=float, default=0.002)
+    parser.add_argument(
+        "--leg_fixture_xy_offset",
+        nargs=2,
+        type=float,
+        default=(0.0, 0.0),
+        metavar=("X", "Y"),
+        help="Move the physical tabletop fixture root in XY while leaving goal placement separately configurable.",
+    )
+    parser.add_argument(
+        "--leg_goal_xy_offset",
+        nargs=2,
+        type=float,
+        default=(0.0, 0.0),
+        metavar=("X", "Y"),
+        help="Move the scripted leg goal root in XY independently from the physical fixture.",
+    )
     parser.add_argument(
         "--leg_randomize_start",
         action="store_true",
@@ -741,7 +757,16 @@ def _make_furniturebench_leg_trajectory(args) -> tuple[np.ndarray, list[np.ndarr
         + float(args.leg_fixture_clearance)
     )
     fixture_root = np.array([0.0, 0.0, fixture_root_z], dtype=np.float32)
-    hole = fixture_root + FURNITUREBENCH_TABLE_HOLES[args.leg_hole_index]
+    fixture_root[:2] = np.asarray(args.leg_fixture_xy_offset, dtype=np.float32)
+    goal_root = np.array(
+        [
+            float(args.leg_goal_xy_offset[0]),
+            float(args.leg_goal_xy_offset[1]),
+            fixture_root_z,
+        ],
+        dtype=np.float32,
+    )
+    hole = goal_root + FURNITUREBENCH_TABLE_HOLES[args.leg_hole_index]
 
     if bool(args.leg_use_omnireset_final_height):
         final_z = (
@@ -781,6 +806,10 @@ def _make_furniturebench_leg_trajectory(args) -> tuple[np.ndarray, list[np.ndarr
         return start_pose, [final_pose], fixture_root
     if args.leg_goal_sequence == "preinsert_final":
         return start_pose, [preinsert_pose, final_pose], fixture_root
+    if args.leg_goal_sequence == "high_hover":
+        return start_pose, [hover_pose], fixture_root
+    if args.leg_goal_sequence == "high_hover_final":
+        return start_pose, [hover_pose, final_pose], fixture_root
     if args.leg_goal_sequence == "pingpong":
         goals = []
         for _ in range(max(1, int(args.leg_pingpong_cycles))):

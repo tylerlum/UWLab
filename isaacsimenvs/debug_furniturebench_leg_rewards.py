@@ -41,7 +41,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--goal_mode",
-        choices=("finalGoalOnly", "preInsertAndFinal", "dense"),
+        choices=("finalGoalOnly", "preInsertAndFinal", "dense", "highHover", "highHoverAndFinal"),
         default="preInsertAndFinal",
     )
     parser.add_argument(
@@ -55,6 +55,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default="omnireset_alignment",
     )
     parser.add_argument("--physics_profile", choices=("omnireset", "simtoolreal"), default="omnireset")
+    parser.add_argument("--hover_height", type=float, default=None)
+    parser.add_argument(
+        "--force_lifted_for_keypoint_reward",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
     parser.add_argument("--success_steps", type=int, default=10)
     parser.add_argument("--episode_length", type=int, default=600)
     parser.add_argument("--policy_steps", type=int, default=600)
@@ -131,6 +137,12 @@ def _make_cfg(args):
     cfg.furniturebench_leg.initialization_mode = str(args.initialization_mode)
     cfg.furniturebench_leg.success_mode = str(args.success_mode)
     cfg.furniturebench_leg.physics_profile = str(args.physics_profile)
+    if args.hover_height is not None:
+        cfg.furniturebench_leg.hover_height = float(args.hover_height)
+    if args.force_lifted_for_keypoint_reward is not None:
+        cfg.furniturebench_leg.force_lifted_for_keypoint_reward = bool(
+            args.force_lifted_for_keypoint_reward
+        )
     cfg.termination.success_steps = int(args.success_steps)
     cfg.termination.episode_length = int(args.episode_length)
     cfg.episode_length_s = float(args.episode_length) / 60.0

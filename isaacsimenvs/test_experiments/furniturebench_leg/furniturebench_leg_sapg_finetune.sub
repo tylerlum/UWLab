@@ -42,11 +42,23 @@ TASK_ID="Isaacsimenvs-FurnitureBenchLeg-Direct-v0"
 AGENT_KEY="rl_games_sapg_cfg_entry_point"
 
 RUN_TAG="${RUN_TAG:-fbleg_${GPU_KIND}_${GOAL_MODE:-finalGoalOnly}_${INIT_MODE:-omnireset_partial_assemblies}}"
-GOAL_MODE="${GOAL_MODE:-finalGoalOnly}"                         # finalGoalOnly | preInsertAndFinal | dense
+GOAL_MODE="${GOAL_MODE:-highHoverAndFinal}"                     # finalGoalOnly | preInsertAndFinal | dense | highHover | highHoverAndFinal
 INIT_MODE="${INIT_MODE:-omnireset_partial_assemblies}"           # omnireset_partial_assemblies | upright_fixed | random_table
 SUCCESS_MODE="${SUCCESS_MODE:-omnireset_alignment}"              # omnireset_alignment | simtoolreal_keypoints
 ENABLE_RETRACT="${ENABLE_RETRACT:-false}"
 FORCE_CONSECUTIVE_NEAR_GOAL="${FORCE_CONSECUTIVE_NEAR_GOAL:-true}"
+FORCE_LIFTED_FOR_KEYPOINT_REWARD="${FORCE_LIFTED_FOR_KEYPOINT_REWARD:-false}"
+HOVER_HEIGHT="${HOVER_HEIGHT:-0.4}"
+FIXTURE_XY_OFFSET="${FIXTURE_XY_OFFSET:-[0.0,0.0]}"
+GOAL_XY_OFFSET="${GOAL_XY_OFFSET:-[0.0,0.0]}"
+RANDOM_START_XY_CENTER="${RANDOM_START_XY_CENTER:-[0.20,0.08]}"
+RANDOM_START_XY_RANGE="${RANDOM_START_XY_RANGE:-[0.0,0.0]}"
+RANDOM_START_Z_RANGE="${RANDOM_START_Z_RANGE:-0.0}"
+RANDOM_START_YAW_RANGE_DEG="${RANDOM_START_YAW_RANGE_DEG:-0.0}"
+RANDOM_START_ROLL_PITCH_RANGE_DEG="${RANDOM_START_ROLL_PITCH_RANGE_DEG:-[0.0,0.0]}"
+SUCCESS_TOLERANCE="${SUCCESS_TOLERANCE:-0.075}"
+TARGET_SUCCESS_TOLERANCE="${TARGET_SUCCESS_TOLERANCE:-0.01}"
+SUCCESS_STEPS="${SUCCESS_STEPS:-10}"
 
 # Keep num_envs / expl_coef_block_size = 6 when possible to match the pretrained
 # SAPG coefficient-conditioned tensors exactly. The code can resize in
@@ -68,10 +80,15 @@ SEED="${SEED:-42}"
 # later after the basic fixture/object physics and success curve look healthy.
 FORCE_SCALE="${FORCE_SCALE:-0.0}"
 TORQUE_SCALE="${TORQUE_SCALE:-0.0}"
-LIFTING_REW_SCALE="${LIFTING_REW_SCALE:-0.0}"
-LIFTING_BONUS="${LIFTING_BONUS:-0.0}"
+LIFTING_REW_SCALE="${LIFTING_REW_SCALE:-20.0}"
+LIFTING_BONUS="${LIFTING_BONUS:-300.0}"
 OBJECT_SCALE_NOISE_RANGE="${OBJECT_SCALE_NOISE_RANGE:-[1.0,1.0]}"
 
+CAPTURE_VIDEO="${CAPTURE_VIDEO:-false}"
+VIDEO_INTERVAL="${VIDEO_INTERVAL:-6000}"
+VIDEO_CAPTURE_FRAMES="${VIDEO_CAPTURE_FRAMES:-600}"
+VIDEO_FPS="${VIDEO_FPS:-30}"
+VIDEO_WANDB_KEY="${VIDEO_WANDB_KEY:-rollout_video}"
 CAPTURE_VIEWER_LEN="${CAPTURE_VIEWER_LEN:-600}"
 CAPTURE_VIEWER_INTERVAL="${CAPTURE_VIEWER_INTERVAL:-6000}"
 CAPTURE_VIEWER_ENV_ID="${CAPTURE_VIEWER_ENV_ID:-0}"
@@ -114,6 +131,10 @@ echo "Checkpoint:    $CHECKPOINT"
 echo "Goal/init:     $GOAL_MODE / $INIT_MODE"
 echo "Success mode:  $SUCCESS_MODE"
 echo "Retract:       $ENABLE_RETRACT"
+echo "Force lifted:  $FORCE_LIFTED_FOR_KEYPOINT_REWARD"
+echo "Hover height:  $HOVER_HEIGHT"
+echo "Fixture/goal:  $FIXTURE_XY_OFFSET / $GOAL_XY_OFFSET"
+echo "Capture video: $CAPTURE_VIDEO"
 echo "Num envs:      $NUM_ENVS"
 echo "Block size:    $EXPL_COEF_BLOCK_SIZE"
 echo ""
@@ -160,6 +181,17 @@ if [ -n "$WANDB_ENTITY" ]; then
     WANDB_ARGS+=(--wandb_entity "$WANDB_ENTITY")
 fi
 
+VIDEO_ARGS=()
+if [ "$CAPTURE_VIDEO" = "true" ] || [ "$CAPTURE_VIDEO" = "1" ]; then
+    VIDEO_ARGS=(
+        --capture_video
+        --video_interval "$VIDEO_INTERVAL"
+        --video_capture_frames "$VIDEO_CAPTURE_FRAMES"
+        --video_fps "$VIDEO_FPS"
+        --video_wandb_key "$VIDEO_WANDB_KEY"
+    )
+fi
+
 "$PYTHON_BIN" -u isaacsimenvs/train.py \
     --task "$TASK_ID" \
     --agent "$AGENT_KEY" \
@@ -171,13 +203,26 @@ fi
     --capture_viewer_interval "$CAPTURE_VIEWER_INTERVAL" \
     --capture_viewer_env_id "$CAPTURE_VIEWER_ENV_ID" \
     --capture_viewer_wandb_key "$CAPTURE_VIEWER_WANDB_KEY" \
+    "${VIDEO_ARGS[@]}" \
     "${WANDB_ARGS[@]}" \
     env.scene.num_envs="$NUM_ENVS" \
     env.furniturebench_leg.goal_mode="$GOAL_MODE" \
     env.furniturebench_leg.initialization_mode="$INIT_MODE" \
     env.furniturebench_leg.success_mode="$SUCCESS_MODE" \
     env.furniturebench_leg.enable_retract="$ENABLE_RETRACT" \
+    env.furniturebench_leg.force_lifted_for_keypoint_reward="$FORCE_LIFTED_FOR_KEYPOINT_REWARD" \
+    env.furniturebench_leg.hover_height="$HOVER_HEIGHT" \
+    "env.furniturebench_leg.fixture_xy_offset=$FIXTURE_XY_OFFSET" \
+    "env.furniturebench_leg.goal_xy_offset=$GOAL_XY_OFFSET" \
+    "env.furniturebench_leg.random_start_xy_center=$RANDOM_START_XY_CENTER" \
+    "env.furniturebench_leg.random_start_xy_range=$RANDOM_START_XY_RANGE" \
+    env.furniturebench_leg.random_start_z_range="$RANDOM_START_Z_RANGE" \
+    env.furniturebench_leg.random_start_yaw_range_deg="$RANDOM_START_YAW_RANGE_DEG" \
+    "env.furniturebench_leg.random_start_roll_pitch_range_deg=$RANDOM_START_ROLL_PITCH_RANGE_DEG" \
     env.termination.force_consecutive_near_goal_steps="$FORCE_CONSECUTIVE_NEAR_GOAL" \
+    env.termination.success_tolerance="$SUCCESS_TOLERANCE" \
+    env.termination.target_success_tolerance="$TARGET_SUCCESS_TOLERANCE" \
+    env.termination.success_steps="$SUCCESS_STEPS" \
     env.domain_randomization.force_scale="$FORCE_SCALE" \
     env.domain_randomization.torque_scale="$TORQUE_SCALE" \
     "env.domain_randomization.object_scale_noise_multiplier_range=$OBJECT_SCALE_NOISE_RANGE" \
