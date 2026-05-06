@@ -123,6 +123,8 @@ def _goal_count_from_mode(goal_mode: str, dense_descend_steps: int) -> int:
         return 1
     if goal_mode in ("preInsertAndFinal", "highHoverAndFinal"):
         return 2
+    if goal_mode == "preInsertDenseFinal":
+        return 1 + max(1, int(dense_descend_steps))
     if goal_mode == "dense":
         return 2 + max(1, int(dense_descend_steps))
     raise ValueError(f"goal_mode must be one of {VALID_GOAL_MODES}, got {goal_mode!r}")
@@ -360,7 +362,10 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
         elif leg_cfg.goal_mode == "highHoverAndFinal":
             goals = [hover, final]
         else:
-            goals = [hover, pre]
+            if leg_cfg.goal_mode == "preInsertDenseFinal":
+                goals = [pre]
+            else:
+                goals = [hover, pre]
             steps = max(1, int(leg_cfg.dense_descend_steps))
             total_yaw_delta = float(total_yaw_delta_t.detach().cpu().item())
             for i in range(1, steps + 1):
@@ -381,7 +386,7 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
             flags = [False, True]
         elif mode == "highHoverAndFinal":
             flags = [False, True]
-        elif mode == "dense":
+        elif mode in ("dense", "preInsertDenseFinal"):
             flags = [False] * max(1, self._leg_goals_asset_t.shape[0])
             flags[-1] = True
         else:

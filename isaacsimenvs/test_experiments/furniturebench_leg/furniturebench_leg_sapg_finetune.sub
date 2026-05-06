@@ -42,7 +42,7 @@ TASK_ID="Isaacsimenvs-FurnitureBenchLeg-Direct-v0"
 AGENT_KEY="rl_games_sapg_cfg_entry_point"
 
 RUN_TAG="${RUN_TAG:-fbleg_${GPU_KIND}_${GOAL_MODE:-finalGoalOnly}_${INIT_MODE:-omnireset_partial_assemblies}}"
-GOAL_MODE="${GOAL_MODE:-highHoverAndFinal}"                     # finalGoalOnly | preInsertAndFinal | dense | highHover | highHoverAndFinal
+GOAL_MODE="${GOAL_MODE:-highHoverAndFinal}"                     # finalGoalOnly | preInsertAndFinal | preInsertDenseFinal | dense | highHover | highHoverAndFinal
 INIT_MODE="${INIT_MODE:-omnireset_partial_assemblies}"           # omnireset_partial_assemblies | upright_fixed | random_table
 SUCCESS_MODE="${SUCCESS_MODE:-omnireset_alignment}"              # omnireset_alignment | simtoolreal_keypoints
 ENABLE_RETRACT="${ENABLE_RETRACT:-false}"

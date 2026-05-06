@@ -54,7 +54,7 @@ assets:
   fixture_solver_velocity_iteration_count: 0
 
 furniturebench_leg:
-  goal_mode: "finalGoalOnly"              # dense | preInsertAndFinal | finalGoalOnly | highHover | highHoverAndFinal
+  goal_mode: "finalGoalOnly"              # dense | preInsertDenseFinal | preInsertAndFinal | finalGoalOnly | highHover | highHoverAndFinal
   initialization_mode: "omnireset_partial_assemblies"  # random_table | upright_fixed | omnireset_partial_assemblies
   physics_profile: "omnireset"
   hole_index: 0

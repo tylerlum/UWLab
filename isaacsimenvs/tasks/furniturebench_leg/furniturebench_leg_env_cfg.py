@@ -7,7 +7,14 @@ from isaaclab.utils import configclass
 from isaacsimenvs.tasks.simtoolreal.simtoolreal_env_cfg import SimToolRealEnvCfg
 
 
-VALID_GOAL_MODES = ("dense", "preInsertAndFinal", "finalGoalOnly", "highHover", "highHoverAndFinal")
+VALID_GOAL_MODES = (
+    "dense",
+    "preInsertDenseFinal",
+    "preInsertAndFinal",
+    "finalGoalOnly",
+    "highHover",
+    "highHoverAndFinal",
+)
 VALID_INIT_MODES = ("random_table", "upright_fixed", "omnireset_partial_assemblies")
 VALID_SUCCESS_MODES = ("omnireset_alignment", "simtoolreal_keypoints")
 
