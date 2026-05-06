@@ -150,7 +150,8 @@ submit_job "rtx6000" "$RTX6000_TARGET" 3072 512 "dense" "omnireset_alignment" "[
 if [[ "$PRINT_LOCAL" == "1" ]]; then
     cat <<EOF
 
-# Local workstation run, start manually when the GPU is free.
+# Local workstation canary. Keep this smaller than cluster jobs; 1536 envs
+# with MP4 capture can OOM a 24 GB 4090 during Isaac Sim startup/training.
 OMNI_KIT_ACCEPT_EULA=YES PYTHONNOUSERSITE=1 \\
 env_uwlab/bin/python -u isaacsimenvs/train.py \\
   --task Isaacsimenvs-FurnitureBenchLeg-Direct-v0 \\
@@ -160,16 +161,12 @@ env_uwlab/bin/python -u isaacsimenvs/train.py \\
   --headless \\
   --capture_viewer \\
   --capture_viewer_len 600 \\
-  --capture_viewer_interval 6000 \\
-  --capture_video \\
-  --video_interval 6000 \\
-  --video_capture_frames 600 \\
-  --video_fps 30 \\
+  --capture_viewer_interval 3000 \\
   --wandb_activate \\
   --wandb_project UWLab-SimToolReal-FurnitureBenchLeg \\
   --wandb_group "$WANDB_GROUP" \\
-  --wandb_name 0_fbleg_local_real_fixture_highHoverAndFinal_seed51 \\
-  env.scene.num_envs=1536 \\
+  --wandb_name 0_fbleg_local384_real_fixture_highHoverAndFinal_seed51 \\
+  env.scene.num_envs=384 \\
   env.furniturebench_leg.goal_mode=highHoverAndFinal \\
   env.furniturebench_leg.initialization_mode=upright_fixed \\
   env.furniturebench_leg.success_mode=omnireset_alignment \\
@@ -186,14 +183,15 @@ env_uwlab/bin/python -u isaacsimenvs/train.py \\
   env.reward.lifting_bonus=300.0 \\
   env.domain_randomization.force_scale=0.0 \\
   env.domain_randomization.torque_scale=0.0 \\
+  env.domain_randomization.object_scale_noise_multiplier_range=[1.0,1.0] \\
   agent.params.config.max_epochs="$MAX_ITERATIONS" \\
   agent.params.config.horizon_length="$HORIZON_LENGTH" \\
   agent.params.config.seq_length="$SEQ_LENGTH" \\
-  agent.params.config.minibatch_size=$((1536 * HORIZON_LENGTH)) \\
-  agent.params.config.central_value_config.minibatch_size=$((1536 * HORIZON_LENGTH)) \\
-  agent.params.config.expl_coef_block_size=256 \\
-  agent.params.config.name=0_fbleg_local_real_fixture_highHoverAndFinal_seed51 \\
+  agent.params.config.minibatch_size=$((384 * HORIZON_LENGTH)) \\
+  agent.params.config.central_value_config.minibatch_size=$((384 * HORIZON_LENGTH)) \\
+  agent.params.config.expl_coef_block_size=64 \\
+  agent.params.config.name=0_fbleg_local384_real_fixture_highHoverAndFinal_seed51 \\
   agent.params.seed=51 \\
-  hydra.run.dir=outputs/train_fbleg_local_real_fixture_highHoverAndFinal_seed51
+  hydra.run.dir=outputs/train_fbleg_local384_real_fixture_highHoverAndFinal_seed51
 EOF
 fi
