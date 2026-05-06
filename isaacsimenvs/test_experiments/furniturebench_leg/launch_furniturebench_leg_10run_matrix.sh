@@ -28,14 +28,16 @@ SUCCESS_MODE="${SUCCESS_MODE:-omnireset_alignment}"
 ENABLE_RETRACT="${ENABLE_RETRACT:-false}"
 FORCE_CONSECUTIVE_NEAR_GOAL="${FORCE_CONSECUTIVE_NEAR_GOAL:-false}"
 
-# Override these if Slurm uses different feature names.
-A5000_CONSTRAINT="${A5000_CONSTRAINT:-a5000}"
-L40S_CONSTRAINT="${L40S_CONSTRAINT:-l40s}"
-RTX6000_CONSTRAINT="${RTX6000_CONSTRAINT:-rtx6000}"
+# Override these if the cluster node layout changes.  The current Slurm
+# features are coarse (for example `24G,turing`), so node pinning is the
+# clearest way to request exactly the intended GPU type.
+A5000_TARGET="${A5000_TARGET:---nodelist=move3}"
+L40S_TARGET="${L40S_TARGET:---nodelist=move4}"
+RTX6000_TARGET="${RTX6000_TARGET:---nodelist=move5}"
 
 run_sbatch() {
     local label="$1"
-    local constraint="$2"
+    local target_args_text="$2"
     shift 2
     local exports=(
         "ALL"
@@ -49,13 +51,11 @@ run_sbatch() {
     done
     local export_arg
     export_arg="$(IFS=,; echo "${exports[*]}")"
-    local cmd=(
-        sbatch
-        --job-name="$label"
-        --constraint="$constraint"
-        "--export=$export_arg"
-        "$SBATCH_SCRIPT"
-    )
+    local target_args=()
+    if [[ -n "$target_args_text" ]]; then
+        read -r -a target_args <<< "$target_args_text"
+    fi
+    local cmd=(sbatch --job-name="$label" "${target_args[@]}" "--export=$export_arg" "$SBATCH_SCRIPT")
 
     printf '\n# %s\n' "$label"
     printf '%q ' "${cmd[@]}"
@@ -67,7 +67,7 @@ run_sbatch() {
 
 submit_job() {
     local gpu_kind="$1"
-    local constraint="$2"
+    local target_args="$2"
     local num_envs="$3"
     local block_size="$4"
     local goal_mode="$5"
@@ -77,7 +77,7 @@ submit_job() {
     local minibatch_size
     minibatch_size=$((num_envs * HORIZON_LENGTH))
 
-    run_sbatch "$run_tag" "$constraint" \
+    run_sbatch "$run_tag" "$target_args" \
         GPU_KIND="$gpu_kind" \
         RUN_TAG="$run_tag" \
         GOAL_MODE="$goal_mode" \
@@ -109,19 +109,19 @@ echo "W&B group:    $WANDB_GROUP"
 echo "Dry run:      $DRY_RUN"
 
 # A5000 jobs: lower VRAM, keep the easier partial-assembly init and sweep goals.
-submit_job "a5000" "$A5000_CONSTRAINT" 3072 512 "finalGoalOnly" "omnireset_partial_assemblies" 42
-submit_job "a5000" "$A5000_CONSTRAINT" 3072 512 "preInsertAndFinal" "omnireset_partial_assemblies" 43
-submit_job "a5000" "$A5000_CONSTRAINT" 3072 512 "dense" "omnireset_partial_assemblies" 44
+submit_job "a5000" "$A5000_TARGET" 3072 512 "finalGoalOnly" "omnireset_partial_assemblies" 42
+submit_job "a5000" "$A5000_TARGET" 3072 512 "preInsertAndFinal" "omnireset_partial_assemblies" 43
+submit_job "a5000" "$A5000_TARGET" 3072 512 "dense" "omnireset_partial_assemblies" 44
 
 # L40S jobs: same goal sweep from upright fixed starts.
-submit_job "l40s" "$L40S_CONSTRAINT" 6144 1024 "finalGoalOnly" "upright_fixed" 45
-submit_job "l40s" "$L40S_CONSTRAINT" 6144 1024 "preInsertAndFinal" "upright_fixed" 46
-submit_job "l40s" "$L40S_CONSTRAINT" 6144 1024 "dense" "upright_fixed" 47
+submit_job "l40s" "$L40S_TARGET" 6144 1024 "finalGoalOnly" "upright_fixed" 45
+submit_job "l40s" "$L40S_TARGET" 6144 1024 "preInsertAndFinal" "upright_fixed" 46
+submit_job "l40s" "$L40S_TARGET" 6144 1024 "dense" "upright_fixed" 47
 
 # RTX PRO 6000 jobs: hardest random-table starts get the largest batch.
-submit_job "rtx6000" "$RTX6000_CONSTRAINT" 12288 2048 "finalGoalOnly" "random_table" 48
-submit_job "rtx6000" "$RTX6000_CONSTRAINT" 12288 2048 "preInsertAndFinal" "random_table" 49
-submit_job "rtx6000" "$RTX6000_CONSTRAINT" 12288 2048 "dense" "random_table" 50
+submit_job "rtx6000" "$RTX6000_TARGET" 12288 2048 "finalGoalOnly" "random_table" 48
+submit_job "rtx6000" "$RTX6000_TARGET" 12288 2048 "preInsertAndFinal" "random_table" 49
+submit_job "rtx6000" "$RTX6000_TARGET" 12288 2048 "dense" "random_table" 50
 
 if [[ "$PRINT_LOCAL" == "1" ]]; then
     cat <<EOF

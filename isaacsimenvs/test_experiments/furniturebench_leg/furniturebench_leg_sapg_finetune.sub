@@ -5,6 +5,7 @@
 #SBATCH --get-user-env
 #SBATCH --mem=256000
 #SBATCH -t 1-00:00:00
+#SBATCH --account=move
 #SBATCH --partition=move
 #SBATCH --gres=gpu:1
 #SBATCH -o /dev/null
