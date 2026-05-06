@@ -23,6 +23,7 @@ def _restore(agent, args):
             agent.restore(args['checkpoint'])
         elif load_mode == 'weights':
             weights = _load_checkpoint_weights(agent, args['checkpoint'])
+            _adapt_checkpoint_weight_shapes(agent, weights)
             agent.set_weights(weights)
             agent.loaded_checkpoint = args['checkpoint']
             if (
@@ -31,6 +32,11 @@ def _restore(agent, args):
                 and 'assymetric_vf_nets' in weights
             ):
                 try:
+                    _adapt_state_dict_first_dim(
+                        weights['assymetric_vf_nets'],
+                        agent.central_value_net.state_dict(),
+                        prefix='central_value',
+                    )
                     agent.central_value_net.load_state_dict(weights['assymetric_vf_nets'])
                 except RuntimeError as exc:
                     print(f"Skipping central value checkpoint weights: {exc}")
@@ -47,6 +53,44 @@ def _load_checkpoint_weights(agent, checkpoint_path):
         if 0 in checkpoint:
             return checkpoint[0]
     return checkpoint
+
+
+def _resize_first_dim(value, target_shape):
+    if tuple(value.shape) == tuple(target_shape):
+        return value
+    if value.dim() < 1 or tuple(value.shape[1:]) != tuple(target_shape[1:]):
+        return value
+    target_n = int(target_shape[0])
+    if target_n <= int(value.shape[0]):
+        return value[:target_n].clone()
+    repeats = int(np.ceil(target_n / int(value.shape[0])))
+    return value.repeat((repeats, *([1] * (value.dim() - 1))))[:target_n].clone()
+
+
+def _adapt_state_dict_first_dim(source_state, target_state, prefix):
+    for key, target_value in target_state.items():
+        if key not in source_state:
+            continue
+        value = source_state[key]
+        if not torch.is_tensor(value) or not torch.is_tensor(target_value):
+            continue
+        resized = _resize_first_dim(value, target_value.shape)
+        if tuple(resized.shape) != tuple(value.shape):
+            print(
+                f"=> resized {prefix} checkpoint tensor {key}: "
+                f"{tuple(value.shape)} -> {tuple(resized.shape)}"
+            )
+            source_state[key] = resized
+
+
+def _adapt_checkpoint_weight_shapes(agent, weights):
+    if not isinstance(weights, dict) or 'model' not in weights:
+        return
+    _adapt_state_dict_first_dim(
+        weights['model'],
+        agent.model.state_dict(),
+        prefix='model',
+    )
 
 def _override_sigma(agent, args):
     if 'sigma' in args and args['sigma'] is not None:

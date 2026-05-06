@@ -10,9 +10,11 @@ from __future__ import annotations
 import time
 import urllib.request
 import subprocess
+import posixpath
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import gymnasium as gym
 import numpy as np
@@ -29,6 +31,9 @@ DEFAULT_GITHUB_RAW_BASE = (
 )
 ROBOT_URDF_RELATIVE_PATH = "assets/urdf/kuka_sharpa_description/iiwa14_left_sharpa_adjusted_restricted.urdf"
 TABLE_URDF_PATH = REPO_ROOT / "assets" / "urdf" / "table_narrow.urdf"
+FURNITURE_BENCH_RAW_BASE = (
+    "https://raw.githubusercontent.com/clvrai/furniture-bench/main/"
+)
 
 
 def _to_numpy(value: Any) -> np.ndarray:
@@ -49,6 +54,77 @@ def _pose_xyzw(pos, quat_wxyz) -> np.ndarray:
     pose[:3] = _to_numpy(pos)
     pose[3:] = _quat_wxyz_to_xyzw(quat_wxyz)
     return pose
+
+
+def _resolve_local_path(path: str | Path) -> Path:
+    candidate = Path(str(path)).expanduser()
+    if candidate.is_absolute():
+        return candidate
+    repo_candidate = REPO_ROOT / candidate
+    if repo_candidate.exists():
+        return repo_candidate
+    return candidate
+
+
+def _is_url(path: str | Path) -> bool:
+    return str(path).startswith(("http://", "https://"))
+
+
+def _furniturebench_urdf_relpath(urdf_source: str | Path) -> str | None:
+    source = str(urdf_source)
+    if _is_url(source):
+        parts = [part for part in urlparse(source).path.split("/") if part]
+    else:
+        parts = list(Path(source).parts)
+    try:
+        furniture_idx = parts.index("furniture_bench")
+    except ValueError:
+        return None
+    return posixpath.join(*parts[furniture_idx:])
+
+
+def _rewrite_furniturebench_urdf_mesh_urls(urdf_text: str, urdf_source: str | Path) -> str:
+    """Rewrite FurnitureBench URDF mesh paths to raw GitHub URLs for W&B HTML.
+
+    The sim still uses USD assets. This is only for Three.js visualization,
+    where embedded URDF text otherwise has relative mesh paths that W&B cannot
+    resolve.
+    """
+
+    urdf_rel = _furniturebench_urdf_relpath(urdf_source)
+    if urdf_rel is None:
+        return urdf_text
+
+    root = ET.fromstring(urdf_text)
+    urdf_dir_rel = posixpath.dirname(urdf_rel)
+    for mesh in root.findall(".//mesh"):
+        filename = mesh.attrib.get("filename")
+        if not filename or filename.startswith(("http://", "https://", "package://")):
+            continue
+        if filename.startswith("../mesh/"):
+            # FurnitureBench URDFs use paths relative to the furniture asset
+            # root, not relative to the URDF file's directory.
+            mesh_rel = posixpath.normpath(
+                "furniture_bench/assets/furniture/" + filename.removeprefix("../")
+            )
+        elif filename.startswith("mesh/"):
+            mesh_rel = posixpath.normpath("furniture_bench/assets/furniture/" + filename)
+        else:
+            mesh_rel = posixpath.normpath(posixpath.join(urdf_dir_rel, filename))
+        suffix = Path(filename).suffix.lower()
+        mesh.attrib["filename"] = f"{FURNITURE_BENCH_RAW_BASE}{mesh_rel}#ext={suffix}"
+
+    return ET.tostring(root, encoding="unicode")
+
+
+def _viewer_urdf_text(path: str | Path) -> str:
+    if _is_url(path):
+        with urllib.request.urlopen(str(path), timeout=20) as response:
+            text = response.read().decode("utf-8")
+        return _rewrite_furniturebench_urdf_mesh_urls(text, path)
+    urdf_path = _resolve_local_path(path)
+    text = urdf_path.read_text(encoding="utf-8")
+    return _rewrite_furniturebench_urdf_mesh_urls(text, urdf_path)
 
 
 def _git_output(args: list[str]) -> str | None:
@@ -138,6 +214,10 @@ def _check_url(url: str, url_check: str) -> None:
 def object_urdf_text_for_env(env, env_id: int) -> str:
     """Return the procedural object URDF text assigned to one env."""
 
+    override = getattr(getattr(env.cfg, "assets", None), "object_viewer_urdf_path", "")
+    if str(override).strip():
+        return _viewer_urdf_text(override)
+
     urdf_paths = getattr(env, "_object_urdf_paths", None)
     asset_indices = getattr(env, "_object_asset_index_per_env", None)
     if not urdf_paths or asset_indices is None:
@@ -148,7 +228,12 @@ def object_urdf_text_for_env(env, env_id: int) -> str:
 
     asset_index = int(asset_indices[env_id].detach().cpu().item())
     urdf_path = Path(urdf_paths[asset_index])
-    return urdf_path.read_text(encoding="utf-8")
+    if urdf_path.suffix.lower() != ".urdf":
+        raise RuntimeError(
+            f"Object asset for env {env_id} is {urdf_path}, not a URDF. "
+            "Set cfg.assets.object_viewer_urdf_path for interactive viewer HTML."
+        )
+    return _viewer_urdf_text(urdf_path)
 
 
 def table_urdf_text_for_env(env, env_id: int) -> str:
@@ -156,8 +241,19 @@ def table_urdf_text_for_env(env, env_id: int) -> str:
 
     table_paths = getattr(env, "_table_urdf_paths", None)
     if table_paths:
-        return Path(table_paths[env_id % len(table_paths)]).read_text(encoding="utf-8")
+        return _viewer_urdf_text(table_paths[env_id % len(table_paths)])
     return TABLE_URDF_PATH.read_text(encoding="utf-8")
+
+
+def fixture_urdf_text_for_env(env, env_id: int) -> str | None:
+    """Return optional fixture URDF text for viewer-only visualization."""
+
+    if getattr(env, "fixture", None) is None:
+        return None
+    override = getattr(getattr(env.cfg, "assets", None), "fixture_viewer_urdf_path", "")
+    if not str(override).strip():
+        return None
+    return _viewer_urdf_text(override)
 
 
 def capture_pose_viewer_frame(env, env_id: int, *, predicted_object_pose_wxyz=None) -> dict[str, Any]:
@@ -189,6 +285,9 @@ def capture_pose_viewer_frame(env, env_id: int, *, predicted_object_pose_wxyz=No
         "goal_pose": _pose_xyzw(goal_pos, env.goal_viz.data.root_quat_w[env_id]),
         "table_pose": _pose_xyzw(table_pos, env.table.data.root_quat_w[env_id]),
     }
+    if getattr(env, "fixture", None) is not None:
+        fixture_pos = env.fixture.data.root_pos_w[env_id] - origin
+        frame["fixture_pose"] = _pose_xyzw(fixture_pos, env.fixture.data.root_quat_w[env_id])
     if predicted_object_pose_wxyz is not None:
         pred = predicted_object_pose_wxyz[env_id]
         frame["object_pred_pose"] = _pose_xyzw(pred[:3], pred[3:7])
@@ -200,6 +299,7 @@ def build_pose_viewer_html(
     frames: list[dict[str, Any]],
     object_urdf_text: str,
     table_urdf_text: str,
+    fixture_urdf_text: str | None = None,
     github_raw_base: str | None = None,
     url_check: str = "skip",
 ) -> str:
@@ -227,6 +327,15 @@ def build_pose_viewer_html(
             color_override=(0.20, 0.72, 0.31),
         ),
     ]
+    has_fixture = fixture_urdf_text is not None and all("fixture_pose" in frame for frame in frames)
+    if has_fixture:
+        robots.append(
+            make_embedded_robot(
+                name="fixture",
+                urdf_text=fixture_urdf_text,
+                color_override=(0.62, 0.62, 0.62),
+            )
+        )
     has_predicted_object = all("object_pred_pose" in frame for frame in frames)
     if has_predicted_object:
         robots.append(
@@ -242,6 +351,8 @@ def build_pose_viewer_html(
         "object": np.stack([frame["object_pose"] for frame in frames]),
         "goal": np.stack([frame["goal_pose"] for frame in frames]),
     }
+    if has_fixture:
+        object_poses["fixture"] = np.stack([frame["fixture_pose"] for frame in frames])
     if has_predicted_object:
         object_poses["object_pred"] = np.stack([frame["object_pred_pose"] for frame in frames])
 
@@ -289,6 +400,7 @@ class SimToolRealPoseViewerWrapper(gym.Wrapper):
         self.url_check = url_check
         self._object_urdf_text = object_urdf_text_for_env(inner, self.env_id)
         self._table_urdf_text = table_urdf_text_for_env(inner, self.env_id)
+        self._fixture_urdf_text = fixture_urdf_text_for_env(inner, self.env_id)
 
         self._step = 0
         self._capture_index = 0
@@ -334,6 +446,7 @@ class SimToolRealPoseViewerWrapper(gym.Wrapper):
             frames=frames,
             object_urdf_text=self._object_urdf_text,
             table_urdf_text=self._table_urdf_text,
+            fixture_urdf_text=self._fixture_urdf_text,
             github_raw_base=self.github_raw_base,
             url_check=self.url_check,
         )

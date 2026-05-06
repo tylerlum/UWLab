@@ -1,0 +1,165 @@
+# FurnitureBench square-leg screw task for SimToolReal finetuning.
+#
+# Simulation uses the OmniReset USD assets for SquareLeg/SquareTableTop so the
+# threaded contacts keep their mixed SDF/convex collision setup. FurnitureBench
+# URDFs are only used by the pose-only Three.js/W&B viewer.
+
+decimation: 2
+episode_length_s: 10.0
+action_space: 29
+
+sim:
+  dt: 0.00833333333
+  render_interval: 2
+  gravity: [0.0, 0.0, -9.81]
+  physx:
+    solver_type: 1
+    min_position_iteration_count: 8
+    max_position_iteration_count: 192
+    min_velocity_iteration_count: 0
+    max_velocity_iteration_count: 1
+    bounce_threshold_velocity: 0.02
+    friction_offset_threshold: 0.01
+    friction_correlation_distance: 0.0005
+    gpu_found_lost_aggregate_pairs_capacity: 4194304
+    gpu_total_aggregate_pairs_capacity: 8388608
+    gpu_max_rigid_contact_count: 8388608
+    gpu_max_rigid_patch_count: 8388608
+    gpu_collision_stack_size: 2147483648
+
+scene:
+  num_envs: 4096
+  env_spacing: 1.2
+  replicate_physics: false
+  clone_in_fabric: false
+
+assets:
+  robot_urdf: "assets/urdf/kuka_sharpa_description/iiwa14_left_sharpa_adjusted_restricted.urdf"
+  table_urdf: "assets/urdf/table_narrow.urdf"
+  object_name: "furniturebench_square_leg"
+  modify_asset_frictions: true
+  robot_friction: 0.5
+  finger_tip_friction: 1.5
+  object_friction: 1.5
+  object_dynamic_friction: 1.4
+  table_friction: 0.45
+  table_dynamic_friction: 0.35
+  fixture_friction: 0.4
+  fixture_dynamic_friction: 0.325
+  object_mass: 0.05
+  fixture_mass: 0.5
+  object_solver_position_iteration_count: 4
+  object_solver_velocity_iteration_count: 0
+  fixture_solver_position_iteration_count: 4
+  fixture_solver_velocity_iteration_count: 0
+
+furniturebench_leg:
+  goal_mode: "finalGoalOnly"              # dense | preInsertAndFinal | finalGoalOnly
+  initialization_mode: "omnireset_partial_assemblies"  # random_table | upright_fixed | omnireset_partial_assemblies
+  physics_profile: "omnireset"
+  hole_index: 0
+  use_omnireset_final_height: true
+  fixture_clearance: 0.002
+  hover_height: 0.12
+  insert_height: 0.038
+  preinsert_final_z_offset: 0.015427
+  preinsert_yaw_offset_deg: 20.73494
+  final_yaw_offset_deg: 0.0
+  dense_descend_steps: 10
+  dense_screw_turns: 1.0
+  force_lifted_for_keypoint_reward: true
+  policy_frame_pos_offset_asset: [0.0, 0.0, 0.0]
+  random_start_xy_center: [0.10, 0.08]
+  random_start_xy_range: [0.025, 0.025]
+  random_start_z_offset_from_hole: 0.18
+  random_start_z_range: 0.01
+  random_start_yaw_center_deg: 0.0
+  random_start_yaw_range_deg: 25.0
+  random_start_roll_pitch_range_deg: [10.0, 10.0]
+  partial_assemblies_path: ".pretrained_checkpoints/SimToolReal/omnireset_datasets/Resets/SquareLeg__SquareTableTop/partial_assemblies.pt"
+
+obs:
+  state_list: [joint_pos, joint_vel, prev_action_targets, palm_pos, palm_rot, palm_vel,
+               object_rot, object_vel, fingertip_pos_rel_palm, keypoints_rel_palm,
+               keypoints_rel_goal, object_scales, closest_keypoint_max_dist,
+               closest_fingertip_dist, lifted_object, progress, successes, reward]
+  obs_list: [joint_pos, joint_vel, prev_action_targets, palm_pos, palm_rot,
+             object_rot, fingertip_pos_rel_palm, keypoints_rel_palm,
+             keypoints_rel_goal, object_scales]
+  clamp_abs_observations: 10.0
+
+action:
+  arm_moving_average: 0.1
+  hand_moving_average: 0.1
+  dof_speed_scale: 1.5
+
+reward:
+  keypoint_rew_scale: 200.0
+  keypoint_scale: 1.5
+  object_base_size: 0.04
+  fixed_size: [0.06255, 0.03017705, 0.03017705]
+  fixed_size_keypoint_reward: true
+  lifting_rew_scale: 20.0
+  lifting_bonus: 300.0
+  lifting_bonus_threshold: 0.15
+  distance_delta_rew_scale: 50.0
+  reach_goal_bonus: 1000.0
+  kuka_actions_penalty_scale: 0.03
+  hand_actions_penalty_scale: 0.003
+
+reset:
+  reset_position_noise_x: 0.0
+  reset_position_noise_y: 0.0
+  reset_position_noise_z: 0.0
+  fixed_start_pose: null
+  object_orientation_mode: "full"
+  object_yaw_range_degrees: 180.0
+  reset_dof_pos_random_interval_arm: 0.1
+  reset_dof_pos_random_interval_fingers: 0.1
+  reset_dof_vel_random_interval: 0.5
+  table_reset_z: 0.38
+  table_reset_z_range: 0.0
+  table_object_z_offset: 0.25
+  goal_sampling_type: "delta"
+  delta_goal_distance: 0.1
+  delta_rotation_degrees: 90.0
+  target_volume_mins: [-0.35, -0.2, 0.6]
+  target_volume_maxs: [0.35, 0.2, 0.95]
+  target_volume_region_scale: 1.0
+  fixed_goal_pose: null
+  fixed_fixture_pose: null
+
+termination:
+  episode_length: 600
+  success_tolerance: 0.01
+  target_success_tolerance: 0.005
+  eval_success_tolerance: null
+  success_steps: 10
+  max_consecutive_successes: 1
+  force_consecutive_near_goal_steps: false
+  auto_goal_reset_on_success: false
+  tolerance_curriculum_increment: 0.9
+  tolerance_curriculum_interval: 3000
+  tolerance_curriculum_success_threshold: 3.0
+
+domain_randomization:
+  use_obs_delay: true
+  obs_delay_max: 3
+  use_action_delay: true
+  action_delay_max: 3
+  use_object_state_delay_noise: true
+  object_state_delay_max: 10
+  object_state_xyz_noise_std: 0.01
+  object_state_rotation_noise_degrees: 5.0
+  object_scale_noise_multiplier_range: [1.0, 1.0]
+  joint_velocity_obs_noise_std: 0.1
+  force_scale: 0.0
+  force_prob_range: [0.001, 0.1]
+  force_decay: 0.0
+  force_decay_interval: 0.08
+  force_only_when_lifted: true
+  torque_scale: 0.0
+  torque_prob_range: [0.001, 0.1]
+  torque_decay: 0.0
+  torque_decay_interval: 0.08
+  torque_only_when_lifted: true

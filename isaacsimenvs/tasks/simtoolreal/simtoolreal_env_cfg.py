@@ -106,6 +106,7 @@ class AssetsCfg:
     # q_world_asset * q_asset_policy.
     object_policy_frame_quat_wxyz: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0)
     object_policy_frame_pos_offset: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    object_viewer_urdf_path: str = ""
 
     # Optional kinematic object in the scene, used for fixed mating parts such
     # as the FurnitureBench tabletop that the leg screws into.
@@ -114,6 +115,7 @@ class AssetsCfg:
     fixture_mass: float | None = None
     fixture_solver_position_iteration_count: int | None = None
     fixture_solver_velocity_iteration_count: int | None = None
+    fixture_viewer_urdf_path: str = ""
 
 # ----------------------------------------------------------------------------
 # obs

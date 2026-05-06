@@ -32,6 +32,15 @@ import argparse
 import math
 import os
 import sys
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+LOCAL_RL_GAMES = REPO_ROOT / "rl_games"
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+if LOCAL_RL_GAMES.exists():
+    sys.path.insert(0, str(LOCAL_RL_GAMES))
 
 
 def main() -> None:
@@ -62,6 +71,7 @@ def main() -> None:
     parser.add_argument("--video_interval", type=int, default=10)
     parser.add_argument("--video_capture_frames", type=int, default=120)
     parser.add_argument("--video_fps", type=int, default=30)
+    parser.add_argument("--video_wandb_key", default="rollout_video")
     # --- Pose-only interactive HTML viewer (no cameras / no renderer) ---
     parser.add_argument(
         "--capture_viewer",
@@ -144,12 +154,50 @@ def main() -> None:
         if args_cli.capture_video:
             from pathlib import Path
 
+            class WandbRecordVideo(gym.wrappers.RecordVideo):
+                def stop_recording(self):
+                    video_name = self._video_name
+                    video_folder = Path(self.video_folder)
+                    step_id = max(0, int(getattr(self, "step_id", 0)))
+                    fps = int(getattr(self, "frames_per_sec", args_cli.video_fps))
+                    super().stop_recording()
+                    if not video_name:
+                        return
+                    video_path = video_folder / f"{video_name}.mp4"
+                    if not video_path.exists():
+                        return
+                    try:
+                        import wandb
+                    except Exception:
+                        return
+                    if wandb.run is None:
+                        return
+                    try:
+                        wandb.log(
+                            {
+                                "global_step": step_id,
+                                args_cli.video_wandb_key: wandb.Video(
+                                    str(video_path),
+                                    fps=fps,
+                                    format="mp4",
+                                ),
+                            },
+                            step=step_id,
+                        )
+                        print(
+                            f"[RecordVideo] logged {video_path} to WandB key={args_cli.video_wandb_key}",
+                            flush=True,
+                        )
+                    except Exception as exc:
+                        print(f"[RecordVideo] WandB log failed for {video_path}: {exc}", flush=True)
+
             video_folder = str(Path(hydra_run_dir) / "videos")
-            env = gym.wrappers.RecordVideo(
+            env = WandbRecordVideo(
                 env,
                 video_folder=video_folder,
                 step_trigger=lambda step: step % args_cli.video_interval == 0,
                 video_length=args_cli.video_capture_frames,
+                fps=args_cli.video_fps,
                 disable_logger=True,
             )
 
