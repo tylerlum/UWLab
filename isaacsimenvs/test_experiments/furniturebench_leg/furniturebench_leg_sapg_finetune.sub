@@ -24,13 +24,22 @@
 set -euo pipefail
 
 REPO_ROOT="${REPO_ROOT:-/move/u/${USER}/github_repos/UWLab}"
-PYTHON_BIN="${PYTHON_BIN:-${REPO_ROOT}/env_uwlab/bin/python}"
+GPU_KIND="${GPU_KIND:-unknown_gpu}"
+if [ -z "${PYTHON_BIN:-}" ]; then
+    if [ "$GPU_KIND" = "rtx6000" ] || [ "$GPU_KIND" = "rtxpro6000" ]; then
+        PYTHON_BIN="/move/u/${USER}/github_repos/depthbasedRL_rtx6000/.venv-isaacsim-rtx6000-cu128-py311/bin/python"
+    else
+        PYTHON_BIN="${REPO_ROOT}/env_uwlab/bin/python"
+    fi
+    if [ ! -x "$PYTHON_BIN" ] && [ -x "/move/u/${USER}/github_repos/depthbasedRL/.venv-isaacsim-py311/bin/python" ]; then
+        PYTHON_BIN="/move/u/${USER}/github_repos/depthbasedRL/.venv-isaacsim-py311/bin/python"
+    fi
+fi
 CHECKPOINT="${CHECKPOINT:-${REPO_ROOT}/.pretrained_checkpoints/SimToolReal/pretrained_policy/model.pth}"
 
 TASK_ID="Isaacsimenvs-FurnitureBenchLeg-Direct-v0"
 AGENT_KEY="rl_games_sapg_cfg_entry_point"
 
-GPU_KIND="${GPU_KIND:-unknown_gpu}"
 RUN_TAG="${RUN_TAG:-fbleg_${GPU_KIND}_${GOAL_MODE:-finalGoalOnly}_${INIT_MODE:-omnireset_partial_assemblies}}"
 GOAL_MODE="${GOAL_MODE:-finalGoalOnly}"                         # finalGoalOnly | preInsertAndFinal | dense
 INIT_MODE="${INIT_MODE:-omnireset_partial_assemblies}"           # omnireset_partial_assemblies | upright_fixed | random_table
