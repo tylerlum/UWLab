@@ -146,6 +146,16 @@ class A2CBase(BaseAlgorithm):
 
         self.central_value_config = self.config.get('central_value_config', None)
         self.has_central_value = self.central_value_config is not None
+        if self.has_central_value:
+            for summary_key in (
+                'summaries_step_mode',
+                'summaries_interval_enabled',
+                'defer_summaries_sec',
+                'summaries_interval_sec_min',
+                'summaries_interval_sec_max',
+            ):
+                if summary_key in self.config and summary_key not in self.central_value_config:
+                    self.central_value_config[summary_key] = self.config[summary_key]
         self.truncate_grads = self.config.get('truncate_grads', False)
 
         if self.has_central_value:

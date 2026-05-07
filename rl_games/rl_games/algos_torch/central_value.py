@@ -25,6 +25,11 @@ class CentralValueTrain(nn.Module):
         self.multi_gpu = multi_gpu
         self.truncate_grads = config.get('truncate_grads', False)
         self.config = config
+        self.summaries_step_mode = str(config.get('summaries_step_mode', 'frame')).lower()
+        if self.summaries_step_mode not in ('frame', 'epoch'):
+            raise ValueError(
+                f"summaries_step_mode must be 'frame' or 'epoch', got {self.summaries_step_mode!r}"
+            )
         self.normalize_input = config['normalize_input']
         self.zero_rnn_on_done = zero_rnn_on_done
         self.type = type
@@ -235,8 +240,9 @@ class CentralValueTrain(nn.Module):
         self.update_lr(self.lr)
         self.frame += self.batch_size
         if self.writter != None:
-            self.writter.add_scalar('losses/cval_loss', avg_loss, self.frame)
-            self.writter.add_scalar('info/cval_lr', self.lr, self.frame)        
+            summary_step = self.epoch_num if self.summaries_step_mode == 'epoch' else self.frame
+            self.writter.add_scalar('losses/cval_loss', avg_loss, summary_step)
+            self.writter.add_scalar('info/cval_lr', self.lr, summary_step)
         return avg_loss
 
     def calc_gradients(self, batch):
