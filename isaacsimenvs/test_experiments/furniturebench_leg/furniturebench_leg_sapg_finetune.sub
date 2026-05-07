@@ -3,7 +3,7 @@
 #SBATCH -n 1
 #SBATCH --cpus-per-task=12
 #SBATCH --get-user-env
-#SBATCH --mem=256000
+#SBATCH --mem=96000
 #SBATCH -t 1-00:00:00
 #SBATCH --account=move
 #SBATCH --partition=move
@@ -50,6 +50,7 @@ FORCE_CONSECUTIVE_NEAR_GOAL="${FORCE_CONSECUTIVE_NEAR_GOAL:-true}"
 FORCE_LIFTED_FOR_KEYPOINT_REWARD="${FORCE_LIFTED_FOR_KEYPOINT_REWARD:-false}"
 HOVER_HEIGHT="${HOVER_HEIGHT:-0.4}"
 FIXTURE_XY_OFFSET="${FIXTURE_XY_OFFSET:-[0.0,0.0]}"
+FIXTURE_RANDOM_XY_RANGE="${FIXTURE_RANDOM_XY_RANGE:-[0.0,0.0]}"
 GOAL_XY_OFFSET="${GOAL_XY_OFFSET:-[0.0,0.0]}"
 RANDOM_START_XY_CENTER="${RANDOM_START_XY_CENTER:-[0.20,0.08]}"
 RANDOM_START_XY_RANGE="${RANDOM_START_XY_RANGE:-[0.0,0.0]}"
@@ -143,6 +144,7 @@ echo "Retract:       $ENABLE_RETRACT"
 echo "Force lifted:  $FORCE_LIFTED_FOR_KEYPOINT_REWARD"
 echo "Hover height:  $HOVER_HEIGHT"
 echo "Fixture/goal:  $FIXTURE_XY_OFFSET / $GOAL_XY_OFFSET"
+echo "Fixture rand:  $FIXTURE_RANDOM_XY_RANGE"
 echo "OmniReset tol: $OMNIRESET_POSITION_SUCCESS_THRESHOLD m / $OMNIRESET_ORIENTATION_SUCCESS_THRESHOLD rad"
 echo "Dense screw:   $DENSE_DESCEND_STEPS steps / $DENSE_SCREW_TURNS turns"
 echo "Screw metric:  min_turns=$SCREW_METRIC_MIN_TURNS_FOR_INSERT hole_radius=$SCREW_METRIC_HOLE_RADIUS"
@@ -244,6 +246,7 @@ fi
     env.furniturebench_leg.screw_metric_hole_radius="$SCREW_METRIC_HOLE_RADIUS" \
     env.furniturebench_leg.final_success_requires_screw_insert_like="$FINAL_SUCCESS_REQUIRES_SCREW_INSERT_LIKE" \
     "env.furniturebench_leg.fixture_xy_offset=$FIXTURE_XY_OFFSET" \
+    "env.furniturebench_leg.fixture_random_xy_range=$FIXTURE_RANDOM_XY_RANGE" \
     "env.furniturebench_leg.goal_xy_offset=$GOAL_XY_OFFSET" \
     "env.furniturebench_leg.random_start_xy_center=$RANDOM_START_XY_CENTER" \
     "env.furniturebench_leg.random_start_xy_range=$RANDOM_START_XY_RANGE" \

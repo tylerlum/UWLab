@@ -160,6 +160,7 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
         self._leg_goal_uses_omnireset_success_t = self._build_goal_success_modes()
         self._leg_num_goals = int(self._leg_goals_asset_t.shape[0])
         cfg.termination.max_consecutive_successes = self._leg_num_goals
+        self._leg_fixture_xy_random_t = torch.zeros(self.num_envs, 2, device=self.device)
 
         self.env_max_goals = torch.full(
             (self.num_envs,), self._leg_num_goals, dtype=torch.long, device=self.device
@@ -207,7 +208,8 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
             f"goal_mode={cfg.furniturebench_leg.goal_mode} "
             f"init={cfg.furniturebench_leg.initialization_mode} "
             f"success_mode={cfg.furniturebench_leg.success_mode} "
-            f"goals={self._leg_num_goals}",
+            f"goals={self._leg_num_goals} "
+            f"fixture_random_xy_range={cfg.furniturebench_leg.fixture_random_xy_range}",
             flush=True,
         )
 
@@ -310,6 +312,26 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
         if hole_index < 0 or hole_index >= len(TABLE_HOLES):
             raise ValueError(f"hole_index must be in [0, {len(TABLE_HOLES)}), got {hole_index}")
         return self._leg_goal_root_local + torch.tensor(TABLE_HOLES[hole_index], device=self.device)
+
+    def _fixture_shift_local(self, env_ids: torch.Tensor) -> torch.Tensor:
+        shift = torch.zeros(env_ids.numel(), 3, device=self.device)
+        shift[:, 0:2] = self._leg_fixture_xy_random_t[env_ids]
+        return shift
+
+    def _hole_pos_local_for_envs(self, env_ids: torch.Tensor) -> torch.Tensor:
+        return self._hole_pos_local().unsqueeze(0) + self._fixture_shift_local(env_ids)
+
+    def _sample_fixture_random_xy(self, env_ids: torch.Tensor) -> None:
+        xy_range = torch.tensor(
+            self.cfg.furniturebench_leg.fixture_random_xy_range,
+            dtype=torch.float32,
+            device=self.device,
+        )
+        if torch.all(xy_range <= 0.0):
+            self._leg_fixture_xy_random_t[env_ids] = 0.0
+            return
+        noise = torch.empty(env_ids.numel(), 2, device=self.device).uniform_(-1.0, 1.0)
+        self._leg_fixture_xy_random_t[env_ids] = noise * xy_range.clamp_min(0.0).unsqueeze(0)
 
     def _asset_pose(self, pos: torch.Tensor, yaw_rad: float) -> torch.Tensor:
         pos = pos.to(self.device, dtype=torch.float32).reshape(3)
@@ -417,7 +439,11 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
     def _write_fixture_pose(self, env_ids: torch.Tensor) -> None:
         n = env_ids.numel()
         pose = torch.zeros(n, 7, device=self.device)
-        pose[:, 0:3] = self._leg_fixture_root_local.unsqueeze(0) + self.scene.env_origins[env_ids]
+        pose[:, 0:3] = (
+            self._leg_fixture_root_local.unsqueeze(0)
+            + self._fixture_shift_local(env_ids)
+            + self.scene.env_origins[env_ids]
+        )
         pose[:, 3] = 1.0
         self.fixture.write_root_pose_to_sim(pose, env_ids=env_ids)
         self.fixture.write_root_velocity_to_sim(torch.zeros(n, 6, device=self.device), env_ids=env_ids)
@@ -433,16 +459,20 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
             assert self._partial_pos_t is not None and self._partial_quat_t is not None
             indices = torch.randint(0, self._partial_pos_t.shape[0], (n,), device=self.device)
             pose = torch.zeros(n, 7, device=self.device)
-            pose[:, 0:3] = self._leg_fixture_root_local.unsqueeze(0) + self._partial_pos_t[indices]
+            pose[:, 0:3] = (
+                self._leg_fixture_root_local.unsqueeze(0)
+                + self._fixture_shift_local(env_ids)
+                + self._partial_pos_t[indices]
+            )
             pose[:, 3:7] = self._partial_quat_t[indices]
             return pose
 
-        hole = self._hole_pos_local()
+        hole = self._hole_pos_local_for_envs(env_ids)
         pose = torch.zeros(n, 7, device=self.device)
         if mode == "upright_fixed":
-            xy_center = torch.tensor(leg_cfg.random_start_xy_center, device=self.device)
-            pose[:, 0:2] = xy_center.unsqueeze(0)
-            pose[:, 2] = hole[2] + float(leg_cfg.random_start_z_offset_from_hole)
+            xy_center = torch.tensor(leg_cfg.random_start_xy_center, device=self.device).unsqueeze(0)
+            pose[:, 0:2] = xy_center + self._leg_fixture_xy_random_t[env_ids]
+            pose[:, 2] = hole[:, 2] + float(leg_cfg.random_start_z_offset_from_hole)
             pose[:, 3:7] = _quat_yaw(
                 self.device,
                 torch.deg2rad(torch.tensor(float(leg_cfg.final_yaw_offset_deg), device=self.device)).item(),
@@ -452,9 +482,13 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
         xy_center = torch.tensor(leg_cfg.random_start_xy_center, device=self.device)
         xy_range = torch.tensor(leg_cfg.random_start_xy_range, device=self.device)
         noise = torch.empty(n, 3, device=self.device).uniform_(-1.0, 1.0)
-        pose[:, 0:2] = xy_center.unsqueeze(0) + noise[:, 0:2] * xy_range.unsqueeze(0)
+        pose[:, 0:2] = (
+            xy_center.unsqueeze(0)
+            + self._leg_fixture_xy_random_t[env_ids]
+            + noise[:, 0:2] * xy_range.unsqueeze(0)
+        )
         pose[:, 2] = (
-            hole[2]
+            hole[:, 2]
             + float(leg_cfg.random_start_z_offset_from_hole)
             + noise[:, 2] * float(leg_cfg.random_start_z_range)
         )
@@ -471,6 +505,7 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
     def _reset_leg_episode(self, env_ids: torch.Tensor) -> None:
         n = env_ids.numel()
         self.env_max_goals[env_ids] = self._leg_num_goals
+        self._sample_fixture_random_xy(env_ids)
         self._write_fixture_pose(env_ids)
 
         start_local = self._sample_start_pose_asset(env_ids)
@@ -515,8 +550,10 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
         self._leg_unwrapped_yaw += yaw_delta
         self._leg_prev_yaw = yaw
 
-        hole, pre_z, final_z, pre_yaw, total_yaw_delta = self._screw_reference()
-        radial_error = torch.norm(object_pos[:, 0:2] - hole[0:2].unsqueeze(0), dim=-1)
+        _, pre_z, final_z, pre_yaw, total_yaw_delta = self._screw_reference()
+        hole = self._hole_pos_local().unsqueeze(0)
+        hole_xy = hole[:, 0:2] + self._leg_fixture_xy_random_t
+        radial_error = torch.norm(object_pos[:, 0:2] - hole_xy, dim=-1)
         self._leg_screw_radial_error = radial_error
 
         entry = (
@@ -583,7 +620,7 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
         subgoal_idx = (self._successes[env_ids] % self.env_max_goals[env_ids]).long()
         goal_local = self._leg_goals_asset_t[subgoal_idx]
         pose = goal_local.clone()
-        pose[:, 0:3] += self.scene.env_origins[env_ids]
+        pose[:, 0:3] += self._fixture_shift_local(env_ids) + self.scene.env_origins[env_ids]
         self.goal_viz.write_root_pose_to_sim(pose, env_ids=env_ids)
         self.goal_viz.write_root_velocity_to_sim(
             torch.zeros(env_ids.numel(), 6, device=self.device), env_ids=env_ids

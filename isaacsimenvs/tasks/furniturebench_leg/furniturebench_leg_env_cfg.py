@@ -51,6 +51,7 @@ class FurnitureBenchLegCfg:
     retract_success_tolerance: float = 0.005
     policy_frame_pos_offset_asset: tuple[float, float, float] = (0.0, 0.0, 0.0)
     fixture_xy_offset: tuple[float, float] = (0.0, 0.0)
+    fixture_random_xy_range: tuple[float, float] = (0.0, 0.0)
     goal_xy_offset: tuple[float, float] = (0.0, 0.0)
 
     random_start_xy_center: tuple[float, float] = (0.10, 0.08)
