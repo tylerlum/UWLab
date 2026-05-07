@@ -2,6 +2,9 @@
 
 These notes capture the working assumptions and non-obvious implementation details for running the pretrained SimToolReal policy on the FurnitureBench square leg task in UWLab/Isaac Sim.
 
+For the current training/ablation state, tested knobs, W&B metrics, and next
+experiment plan, see `isaacsimenvs/FURNITUREBENCH_LEG_EXPERIMENT_PLAN.md`.
+
 ## Trusted Code Path
 
 The preferred rollout entrypoint is:
