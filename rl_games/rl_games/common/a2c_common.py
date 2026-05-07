@@ -72,6 +72,10 @@ class A2CBase(BaseAlgorithm):
         self.config = config = params['config']
 
         self.population_based_training = config.get('population_based_training', False)
+        self.summaries_interval_enabled = config.get('summaries_interval_enabled', self.population_based_training)
+        self.summaries_step_mode = str(config.get('summaries_step_mode', 'frame')).lower()
+        if self.summaries_step_mode not in ('frame', 'epoch'):
+            raise ValueError(f"summaries_step_mode must be 'frame' or 'epoch', got {self.summaries_step_mode!r}")
 
         # This helps in PBT when we need to restart an experiment with the exact same name, rather than
         # generating a new name with the timestamp every time.
@@ -284,7 +288,7 @@ class A2CBase(BaseAlgorithm):
 
         if self.global_rank == 0:
             writer = SummaryWriter(self.summaries_dir)
-            if self.population_based_training:
+            if self.summaries_interval_enabled:
                 self.writer = IntervalSummaryWriter(writer, self.config)
             else:
                 self.writer = writer
@@ -409,23 +413,28 @@ class A2CBase(BaseAlgorithm):
     def write_stats(self, total_time, epoch_num, step_time, play_time, update_time, a_losses, c_losses, entropies, kls, last_lr, lr_mul, frame, scaled_time, scaled_play_time, curr_frames):
         # do we need scaled time?
         self.diagnostics.send_info(self.writer)
-        self.writer.add_scalar('performance/step_inference_rl_update_fps', curr_frames / scaled_time, frame)
-        self.writer.add_scalar('performance/step_inference_fps', curr_frames / scaled_play_time, frame)
-        self.writer.add_scalar('performance/step_fps', curr_frames / step_time, frame)
-        self.writer.add_scalar('performance/rl_update_time', update_time, frame)
-        self.writer.add_scalar('performance/step_inference_time', play_time, frame)
-        self.writer.add_scalar('performance/step_time', step_time, frame)
-        self.writer.add_scalar('losses/a_loss', torch_ext.mean_list(a_losses).item(), frame)
-        self.writer.add_scalar('losses/c_loss', torch_ext.mean_list(c_losses).item(), frame)
+        summary_step = self.summary_step(frame, epoch_num)
+        self.writer.add_scalar('performance/step_inference_rl_update_fps', curr_frames / scaled_time, summary_step)
+        self.writer.add_scalar('performance/step_inference_fps', curr_frames / scaled_play_time, summary_step)
+        self.writer.add_scalar('performance/step_fps', curr_frames / step_time, summary_step)
+        self.writer.add_scalar('performance/rl_update_time', update_time, summary_step)
+        self.writer.add_scalar('performance/step_inference_time', play_time, summary_step)
+        self.writer.add_scalar('performance/step_time', step_time, summary_step)
+        self.writer.add_scalar('losses/a_loss', torch_ext.mean_list(a_losses).item(), summary_step)
+        self.writer.add_scalar('losses/c_loss', torch_ext.mean_list(c_losses).item(), summary_step)
 
-        self.writer.add_scalar('losses/entropy', torch_ext.mean_list(entropies).item(), frame)
-        self.writer.add_scalar('info/last_lr', last_lr * lr_mul, frame)
-        self.writer.add_scalar('info/lr_mul', lr_mul, frame)
-        self.writer.add_scalar('info/e_clip', self.e_clip * lr_mul, frame)
-        self.writer.add_scalar('info/kl', torch_ext.mean_list(kls).item(), frame)
-        self.writer.add_scalar('info/epochs', epoch_num, frame)
+        self.writer.add_scalar('losses/entropy', torch_ext.mean_list(entropies).item(), summary_step)
+        self.writer.add_scalar('info/last_lr', last_lr * lr_mul, summary_step)
+        self.writer.add_scalar('info/lr_mul', lr_mul, summary_step)
+        self.writer.add_scalar('info/e_clip', self.e_clip * lr_mul, summary_step)
+        self.writer.add_scalar('info/kl', torch_ext.mean_list(kls).item(), summary_step)
+        self.writer.add_scalar('info/epochs', epoch_num, summary_step)
+        self.writer.add_scalar('info/frames', frame, summary_step)
         print(f"\nPolicy {self.policy_idx}:", end=' ')
-        self.algo_observer.after_print_stats(frame, epoch_num, total_time)
+        self.algo_observer.after_print_stats(summary_step, epoch_num, total_time)
+
+    def summary_step(self, frame, epoch_num):
+        return epoch_num if self.summaries_step_mode == 'epoch' else frame
 
     def set_eval(self):
         self.model.eval()
@@ -1248,6 +1257,7 @@ class DiscreteA2CBase(A2CBase):
                 scaled_play_time = self.num_agents * play_time
 
                 frame = self.frame // self.num_agents
+                summary_step = self.summary_step(frame, epoch_num)
 
                 print_statistics(self.print_stats, curr_frames, step_time, scaled_play_time, scaled_time, 
                                 epoch_num, self.max_epochs, frame, self.max_frames)
@@ -1255,8 +1265,6 @@ class DiscreteA2CBase(A2CBase):
                 self.write_stats(total_time, epoch_num, step_time, play_time, update_time,
                                 a_losses, c_losses, entropies, kls, last_lr, lr_mul, frame, 
                                 scaled_time, scaled_play_time, curr_frames)
-
-                self.algo_observer.after_print_stats(frame, epoch_num, total_time)
 
                 if self.game_rewards.current_size > 0:
                     mean_rewards = self.game_rewards.get_mean()
@@ -1266,17 +1274,17 @@ class DiscreteA2CBase(A2CBase):
 
                     for i in range(self.value_size):
                         rewards_name = 'rewards' if i == 0 else 'rewards{0}'.format(i)
-                        self.writer.add_scalar(rewards_name + '/step'.format(i), mean_rewards[i], frame)
-                        self.writer.add_scalar(rewards_name + '/iter'.format(i), mean_rewards[i], frame)
-                        self.writer.add_scalar(rewards_name + '/time'.format(i), mean_rewards[i], frame)
-                        self.writer.add_scalar('shaped_' + rewards_name + '/step'.format(i), mean_shaped_rewards[i], frame)
-                        self.writer.add_scalar('shaped_' + rewards_name + '/iter'.format(i), mean_shaped_rewards[i], frame)
-                        self.writer.add_scalar('shaped_' + rewards_name + '/time'.format(i), mean_shaped_rewards[i], frame)
+                        self.writer.add_scalar(rewards_name + '/step'.format(i), mean_rewards[i], summary_step)
+                        self.writer.add_scalar(rewards_name + '/iter'.format(i), mean_rewards[i], summary_step)
+                        self.writer.add_scalar(rewards_name + '/time'.format(i), mean_rewards[i], summary_step)
+                        self.writer.add_scalar('shaped_' + rewards_name + '/step'.format(i), mean_shaped_rewards[i], summary_step)
+                        self.writer.add_scalar('shaped_' + rewards_name + '/iter'.format(i), mean_shaped_rewards[i], summary_step)
+                        self.writer.add_scalar('shaped_' + rewards_name + '/time'.format(i), mean_shaped_rewards[i], summary_step)
 
 
-                    self.writer.add_scalar('episode_lengths/step', mean_lengths, frame)
-                    self.writer.add_scalar('episode_lengths/iter', mean_lengths, frame)
-                    self.writer.add_scalar('episode_lengths/time', mean_lengths, frame)
+                    self.writer.add_scalar('episode_lengths/step', mean_lengths, summary_step)
+                    self.writer.add_scalar('episode_lengths/iter', mean_lengths, summary_step)
+                    self.writer.add_scalar('episode_lengths/time', mean_lengths, summary_step)
 
                     if self.has_self_play_config:
                         self.self_play_manager.update(self)
@@ -1561,6 +1569,7 @@ class ContinuousA2CBase(A2CBase):
             step_time, play_time, update_time, sum_time, a_losses, c_losses, b_losses, entropies, kls, last_lr, lr_mul, extra_infos = ret_val
             total_time += sum_time
             frame = self.frame // self.num_agents
+            summary_step = self.summary_step(frame, epoch_num)
 
             # cleaning memory to optimize space
             self.dataset.update_values_dict(None)
@@ -1582,10 +1591,10 @@ class ContinuousA2CBase(A2CBase):
                                 scaled_time, scaled_play_time, curr_frames)
 
                 if len(b_losses) > 0:
-                    self.writer.add_scalar('losses/bounds_loss', torch_ext.mean_list(b_losses).item(), frame)
+                    self.writer.add_scalar('losses/bounds_loss', torch_ext.mean_list(b_losses).item(), summary_step)
 
                 if self.has_soft_aug:
-                    self.writer.add_scalar('losses/aug_loss', np.mean(aug_losses), frame)
+                    self.writer.add_scalar('losses/aug_loss', np.mean(aug_losses), summary_step)
 
                 if self.multi_gpu:
                     # gather state from all gpus
@@ -1604,37 +1613,37 @@ class ContinuousA2CBase(A2CBase):
 
                     for i in range(self.value_size):
                         rewards_name = 'rewards' if i == 0 else 'rewards{0}'.format(i)
-                        self.writer.add_scalar(rewards_name + '/step'.format(i), mean_rewards[i], frame)
-                        self.writer.add_scalar(rewards_name + '/iter'.format(i), mean_rewards[i], frame)
-                        self.writer.add_scalar(rewards_name + '/time'.format(i), mean_rewards[i], frame)
-                        self.writer.add_scalar('shaped_' + rewards_name + '/step'.format(i), mean_shaped_rewards[i], frame)
-                        self.writer.add_scalar('shaped_' + rewards_name + '/iter'.format(i), mean_shaped_rewards[i], frame)
-                        self.writer.add_scalar('shaped_' + rewards_name + '/time'.format(i), mean_shaped_rewards[i], frame)
+                        self.writer.add_scalar(rewards_name + '/step'.format(i), mean_rewards[i], summary_step)
+                        self.writer.add_scalar(rewards_name + '/iter'.format(i), mean_rewards[i], summary_step)
+                        self.writer.add_scalar(rewards_name + '/time'.format(i), mean_rewards[i], summary_step)
+                        self.writer.add_scalar('shaped_' + rewards_name + '/step'.format(i), mean_shaped_rewards[i], summary_step)
+                        self.writer.add_scalar('shaped_' + rewards_name + '/iter'.format(i), mean_shaped_rewards[i], summary_step)
+                        self.writer.add_scalar('shaped_' + rewards_name + '/time'.format(i), mean_shaped_rewards[i], summary_step)
 
-                    self.writer.add_scalar('episode_lengths/step', mean_lengths, frame)
-                    self.writer.add_scalar('episode_lengths/iter', mean_lengths, frame)
-                    self.writer.add_scalar('episode_lengths/time', mean_lengths, frame)
+                    self.writer.add_scalar('episode_lengths/step', mean_lengths, summary_step)
+                    self.writer.add_scalar('episode_lengths/iter', mean_lengths, summary_step)
+                    self.writer.add_scalar('episode_lengths/time', mean_lengths, summary_step)
 
-                    self.writer.add_histogram('auxiliary_stats/off_policy_contrib', np.array(extra_infos['off_policy_contrib']), frame)
-                    self.writer.add_histogram('auxiliary_stats/on_policy_contrib', np.array(extra_infos['on_policy_contrib']), frame)
+                    self.writer.add_histogram('auxiliary_stats/off_policy_contrib', np.array(extra_infos['off_policy_contrib']), summary_step)
+                    self.writer.add_histogram('auxiliary_stats/on_policy_contrib', np.array(extra_infos['on_policy_contrib']), summary_step)
 
                     on_policy_grads = torch.stack(extra_infos['on_policy_grads'])
                     off_policy_grads = torch.stack(extra_infos['off_policy_grads'])
 
-                    self.writer.add_scalar('auxiliary_stats/off_on_grad_similarity', torch.cosine_similarity(on_policy_grads, off_policy_grads).diag().mean(),frame)
-                    self.writer.add_scalar('auxiliary_stats/off_on_relative_grad_norms', torch.norm(off_policy_grads, dim=-1).mean()/torch.norm(on_policy_grads, dim=-1).mean(), frame)
+                    self.writer.add_scalar('auxiliary_stats/off_on_grad_similarity', torch.cosine_similarity(on_policy_grads, off_policy_grads).diag().mean(), summary_step)
+                    self.writer.add_scalar('auxiliary_stats/off_on_relative_grad_norms', torch.norm(off_policy_grads, dim=-1).mean()/torch.norm(on_policy_grads, dim=-1).mean(), summary_step)
                     
                     if extra_infos['mb_intr_rewards'] is not None:
                         if hasattr(self, 'intr_coef_block_size'):
                             for bl in range(self.num_actors // self.intr_coef_block_size):
-                                self.writer.add_scalar(f'intr_rewards/block_{bl}', extra_infos['mb_intr_rewards'][:,self.intr_coef_block_size*bl:self.intr_coef_block_size*(bl+1)].mean(), frame)
+                                self.writer.add_scalar(f'intr_rewards/block_{bl}', extra_infos['mb_intr_rewards'][:,self.intr_coef_block_size*bl:self.intr_coef_block_size*(bl+1)].mean(), summary_step)
                         else:
-                            self.writer.add_scalar(f'intr_rewards/block_0', extra_infos['mb_intr_rewards'].mean(), frame)
-                        self.writer.add_scalar(f'intr_rewards/extr_rewards', extra_infos['mb_extr_rewards'].mean(), frame)
+                            self.writer.add_scalar(f'intr_rewards/block_0', extra_infos['mb_intr_rewards'].mean(), summary_step)
+                        self.writer.add_scalar(f'intr_rewards/extr_rewards', extra_infos['mb_extr_rewards'].mean(), summary_step)
                     
                     if extra_infos['entropies'] != []:
                         for bl in range(self.num_actors // self.intr_coef_block_size):
-                            self.writer.add_scalar(f'intr_rewards/entropy_block_{bl}', torch.tensor(extra_infos['entropies'])[:, bl].mean(), frame)
+                            self.writer.add_scalar(f'intr_rewards/entropy_block_{bl}', torch.tensor(extra_infos['entropies'])[:, bl].mean(), summary_step)
 
                     if self.has_self_play_config:
                         self.self_play_manager.update(self)

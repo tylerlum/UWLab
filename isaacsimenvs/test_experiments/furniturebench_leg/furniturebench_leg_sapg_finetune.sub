@@ -103,6 +103,11 @@ CAPTURE_VIEWER_ENV_ID="${CAPTURE_VIEWER_ENV_ID:-0}"
 CAPTURE_VIEWER_WANDB_KEY="${CAPTURE_VIEWER_WANDB_KEY:-interactive_viewer}"
 CAPTURE_VIEWER_FULL_EPISODES="${CAPTURE_VIEWER_FULL_EPISODES:-false}"
 CAPTURE_VIEWER_EPISODES="${CAPTURE_VIEWER_EPISODES:-1}"
+SUMMARIES_STEP_MODE="${SUMMARIES_STEP_MODE:-epoch}"
+SUMMARIES_INTERVAL_ENABLED="${SUMMARIES_INTERVAL_ENABLED:-true}"
+SUMMARIES_DEFER_SEC="${SUMMARIES_DEFER_SEC:-30}"
+SUMMARIES_INTERVAL_SEC_MIN="${SUMMARIES_INTERVAL_SEC_MIN:-60}"
+SUMMARIES_INTERVAL_SEC_MAX="${SUMMARIES_INTERVAL_SEC_MAX:-600}"
 
 WANDB_PROJECT="${WANDB_PROJECT:-UWLab-SimToolReal-FurnitureBenchLeg}"
 WANDB_GROUP="${WANDB_GROUP:-2026-05-06_leg_finetune}"
@@ -151,6 +156,7 @@ echo "Screw metric:  min_turns=$SCREW_METRIC_MIN_TURNS_FOR_INSERT hole_radius=$S
 echo "Screw gate:    final_success_requires_insert_like=$FINAL_SUCCESS_REQUIRES_SCREW_INSERT_LIKE"
 echo "Capture video: $CAPTURE_VIDEO"
 echo "Viewer:        len=$CAPTURE_VIEWER_LEN interval=$CAPTURE_VIEWER_INTERVAL full=$CAPTURE_VIEWER_FULL_EPISODES episodes=$CAPTURE_VIEWER_EPISODES"
+echo "Summaries:     step_mode=$SUMMARIES_STEP_MODE interval_enabled=$SUMMARIES_INTERVAL_ENABLED min/max=${SUMMARIES_INTERVAL_SEC_MIN}/${SUMMARIES_INTERVAL_SEC_MAX}s"
 echo "Num envs:      $NUM_ENVS"
 echo "Block size:    $EXPL_COEF_BLOCK_SIZE"
 echo ""
@@ -268,6 +274,11 @@ fi
     agent.params.config.minibatch_size="$MINIBATCH_SIZE" \
     agent.params.config.central_value_config.minibatch_size="$MINIBATCH_SIZE" \
     agent.params.config.expl_coef_block_size="$EXPL_COEF_BLOCK_SIZE" \
+    agent.params.config.summaries_step_mode="$SUMMARIES_STEP_MODE" \
+    agent.params.config.summaries_interval_enabled="$SUMMARIES_INTERVAL_ENABLED" \
+    agent.params.config.defer_summaries_sec="$SUMMARIES_DEFER_SEC" \
+    agent.params.config.summaries_interval_sec_min="$SUMMARIES_INTERVAL_SEC_MIN" \
+    agent.params.config.summaries_interval_sec_max="$SUMMARIES_INTERVAL_SEC_MAX" \
     agent.params.config.name="0_${EXPERIMENT_NAME}" \
     agent.params.seed="$SEED" \
     hydra.run.dir="$HYDRA_RUN_DIR"

@@ -45,22 +45,35 @@ class IntervalSummaryWriter:
 
         return interval
 
-    def add_scalar(self, tag, value, step, *args, **kwargs):
+    def _should_write(self, tag, step):
         if step == 0:
             # removes faulty summaries that appear after the experiment restart
             # print('Skip summaries with step=0')
-            return
+            return False
 
         seconds_since_start = time.time() - self.experiment_start
         if seconds_since_start < self.defer_summaries_sec:
-            return
+            return False
 
         last_write = self.last_write_for_tag.get(tag, 0)
         seconds_since_last_write = time.time() - last_write
         interval = self._calc_interval()
         if seconds_since_last_write >= interval:
-            self.writer.add_scalar(tag, value, step, *args, **kwargs)
             self.last_write_for_tag[tag] = time.time()
+            return True
+        return False
+
+    def add_scalar(self, tag, value, step, *args, **kwargs):
+        if self._should_write(tag, step):
+            self.writer.add_scalar(tag, value, step, *args, **kwargs)
+
+    def add_histogram(self, tag, values, step, *args, **kwargs):
+        if self._should_write(tag, step):
+            self.writer.add_histogram(tag, values, step, *args, **kwargs)
+
+    def add_scalars(self, main_tag, tag_scalar_dict, step, *args, **kwargs):
+        if self._should_write(main_tag, step):
+            self.writer.add_scalars(main_tag, tag_scalar_dict, step, *args, **kwargs)
 
     def __getattr__(self, attr):
         return getattr(self.writer, attr)

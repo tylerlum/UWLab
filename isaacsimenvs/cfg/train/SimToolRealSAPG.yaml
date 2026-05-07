@@ -87,6 +87,11 @@ params:
     save_best_after: 100
     save_frequency: 3000
     print_stats: True
+    summaries_step_mode: epoch
+    summaries_interval_enabled: True
+    defer_summaries_sec: 30
+    summaries_interval_sec_min: 60
+    summaries_interval_sec_max: 600
     grad_norm: 1.0
     entropy_coef: 0.0
     truncate_grads: True
