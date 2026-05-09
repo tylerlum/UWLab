@@ -62,6 +62,7 @@ TARGET_SUCCESS_TOLERANCE="${TARGET_SUCCESS_TOLERANCE:-0.01}"
 OMNIRESET_POSITION_SUCCESS_THRESHOLD="${OMNIRESET_POSITION_SUCCESS_THRESHOLD:-0.02}"
 OMNIRESET_ORIENTATION_SUCCESS_THRESHOLD="${OMNIRESET_ORIENTATION_SUCCESS_THRESHOLD:-0.10}"
 SUCCESS_STEPS="${SUCCESS_STEPS:-10}"
+FINAL_SUCCESS_STEPS="${FINAL_SUCCESS_STEPS:-null}"
 DENSE_DESCEND_STEPS="${DENSE_DESCEND_STEPS:-10}"
 DENSE_SCREW_TURNS="${DENSE_SCREW_TURNS:-1.0}"
 SCREW_METRIC_MIN_TURNS_FOR_INSERT="${SCREW_METRIC_MIN_TURNS_FOR_INSERT:-0.5}"
@@ -151,6 +152,7 @@ echo "Hover height:  $HOVER_HEIGHT"
 echo "Fixture/goal:  $FIXTURE_XY_OFFSET / $GOAL_XY_OFFSET"
 echo "Fixture rand:  $FIXTURE_RANDOM_XY_RANGE"
 echo "OmniReset tol: $OMNIRESET_POSITION_SUCCESS_THRESHOLD m / $OMNIRESET_ORIENTATION_SUCCESS_THRESHOLD rad"
+echo "Success steps: success_steps=$SUCCESS_STEPS final_success_steps=$FINAL_SUCCESS_STEPS"
 echo "Dense screw:   $DENSE_DESCEND_STEPS steps / $DENSE_SCREW_TURNS turns"
 echo "Screw metric:  min_turns=$SCREW_METRIC_MIN_TURNS_FOR_INSERT hole_radius=$SCREW_METRIC_HOLE_RADIUS"
 echo "Screw gate:    final_success_requires_insert_like=$FINAL_SUCCESS_REQUIRES_SCREW_INSERT_LIKE"
@@ -241,6 +243,7 @@ fi
     env.furniturebench_leg.goal_mode="$GOAL_MODE" \
     env.furniturebench_leg.initialization_mode="$INIT_MODE" \
     env.furniturebench_leg.success_mode="$SUCCESS_MODE" \
+    env.furniturebench_leg.final_success_steps="$FINAL_SUCCESS_STEPS" \
     env.furniturebench_leg.enable_retract="$ENABLE_RETRACT" \
     env.furniturebench_leg.force_lifted_for_keypoint_reward="$FORCE_LIFTED_FOR_KEYPOINT_REWARD" \
     env.furniturebench_leg.hover_height="$HOVER_HEIGHT" \

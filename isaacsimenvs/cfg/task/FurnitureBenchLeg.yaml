@@ -69,6 +69,7 @@ furniturebench_leg:
   dense_screw_turns: 1.0
   force_lifted_for_keypoint_reward: false
   success_mode: "omnireset_alignment"     # omnireset_alignment | simtoolreal_keypoints
+  final_success_steps: null               # if set, only the final subgoal uses this many near-goal frames
   omnireset_position_success_threshold: 0.0025
   omnireset_orientation_success_threshold: 0.025
   screw_metric_hole_radius: 0.02

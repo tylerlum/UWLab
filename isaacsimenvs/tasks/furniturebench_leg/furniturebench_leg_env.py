@@ -197,6 +197,12 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
         self._leg_screw_phase_error = torch.zeros(self.num_envs, device=self.device)
         self._leg_screw_pushthrough = torch.zeros_like(self.retract_phase)
         self._leg_screw_metrics_last_step = -1
+        self._active_required_success_steps = torch.full(
+            (self.num_envs,),
+            int(cfg.termination.success_steps),
+            dtype=torch.long,
+            device=self.device,
+        )
 
         self._partial_pos_t: torch.Tensor | None = None
         self._partial_quat_t: torch.Tensor | None = None
@@ -694,8 +700,8 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
             )
             self._is_success = self._near_goal_steps >= self.cfg.termination.success_steps
 
+        active_goal_idx = (self._successes % self.env_max_goals).long()
         if bool(self.cfg.furniturebench_leg.final_success_requires_screw_insert_like):
-            active_goal_idx = (self._successes % self.env_max_goals).long()
             final_goal = active_goal_idx >= (self.env_max_goals - 1)
             self._update_screw_metrics_once()
             screw_insert_like, _ = self._screw_insert_like()
@@ -708,6 +714,23 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
                 force_consecutive=self.cfg.termination.force_consecutive_near_goal_steps,
             )
             self._is_success = self._near_goal_steps >= self.cfg.termination.success_steps
+
+        required_success_steps = torch.full_like(
+            self._near_goal_steps,
+            int(self.cfg.termination.success_steps),
+        )
+        final_success_steps = self.cfg.furniturebench_leg.final_success_steps
+        if final_success_steps is not None:
+            final_goal = active_goal_idx >= (self.env_max_goals - 1)
+            final_required_steps = torch.full_like(
+                required_success_steps,
+                max(1, int(final_success_steps)),
+            )
+            required_success_steps = torch.where(
+                final_goal, final_required_steps, required_success_steps
+            )
+            self._is_success = self._near_goal_steps >= required_success_steps
+        self._active_required_success_steps = required_success_steps
 
         is_success = self._is_success
         if self.cfg.furniturebench_leg.enable_retract:
@@ -836,6 +859,12 @@ class FurnitureBenchLegEnv(SimToolRealEnv):
         self.extras["omnireset_orientation_aligned_ratio"] = self._omnireset_orientation_aligned.float().mean()
         self.extras["near_goal_ratio"] = self._near_goal.float().mean()
         self.extras["near_goal_steps_max"] = self._near_goal_steps.max()
+        self.extras["active_required_success_steps_mean"] = (
+            self._active_required_success_steps.float().mean()
+        )
+        self.extras["active_required_success_steps_max"] = (
+            self._active_required_success_steps.max()
+        )
         active_goal_idx = (self._successes % self.env_max_goals).long()
         uses_omnireset_success = self._leg_goal_uses_omnireset_success_t[active_goal_idx]
         self.extras["active_goal_index_mean"] = active_goal_idx.float().mean()

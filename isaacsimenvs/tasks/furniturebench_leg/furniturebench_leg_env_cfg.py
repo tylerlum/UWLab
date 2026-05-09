@@ -37,6 +37,7 @@ class FurnitureBenchLegCfg:
     dense_screw_turns: float = 1.0
     force_lifted_for_keypoint_reward: bool = False
     success_mode: str = "omnireset_alignment"
+    final_success_steps: int | None = None
     omnireset_position_success_threshold: float = 0.0025
     omnireset_orientation_success_threshold: float = 0.025
     screw_metric_hole_radius: float = 0.02
